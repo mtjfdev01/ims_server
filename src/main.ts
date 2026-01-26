@@ -13,11 +13,14 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:3001',
-      'https://ims-client-eight.vercel.app'
+      'https://ims-client-eight.vercel.app',
+      'https://ims-client-eight.vercel.app/'
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   });
   
   // Run user seeder on startup
