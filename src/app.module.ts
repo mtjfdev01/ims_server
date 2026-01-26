@@ -1,0 +1,103 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { ShopsModule } from './shops/shops.module';
+import { StoresModule } from './stores/stores.module';
+import { CompaniesModule } from './companies/companies.module';
+import { ItemsModule } from './items/items.module';
+import { SalesModule } from './sales/sales.module';
+import { OrdersModule } from './orders/orders.module';
+import { PurchasesModule } from './purchases/purchases.module';
+import { ExpenseModule } from './expense/expense.module';
+import { CategoryModule } from './category/category.module';
+import { ItemModule } from './item/item.module';
+import { IssuesModule } from './issues/issues.module';
+import { Shop } from './shops/entities/shop.entity';
+import { Store } from './stores/entities/store.entity';
+import { Category } from './category/entities/category.entity';
+import { Company } from './companies/entities/company.entity';
+import { Item } from './items/entities/item.entity';
+import { Sale } from './sales/entities/sale.entity';
+import { SaleItem } from './sale-items/entities/sale-item.entity';
+import { Order } from './orders/entities/order.entity';
+import { OrderItem } from './order-items/entities/order-item.entity';
+import { Purchase } from './purchases/entities/purchase.entity';
+import { Expense } from './expense/entities/expense.entity';
+import { Issue } from './issues/entities/issue.entity';
+import { User } from './users/entities/user.entity';
+import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
+
+// Get database configuration
+function getTypeOrmConfig() {
+  let databaseUrl = process.env.DATABASE_URL;
+
+  console.log('DATABASE_URL exists:', !!databaseUrl);
+  console.log('DATABASE_URL starts with postgres:', databaseUrl?.startsWith('postgres'));
+
+  // If DATABASE_URL is a full connection string, use it directly
+  if (databaseUrl && (databaseUrl.startsWith('postgresql://') || databaseUrl.startsWith('postgres://'))) {
+    // Replace Railway internal domain with public domain for local development
+    // Railway internal: postgres.railway.internal
+    // Railway public: postgres-production-33ca.up.railway.app (from your dashboard)
+    if (databaseUrl.includes('postgres.railway.internal')) {
+      // Use public domain instead - update this to match your Railway public domain
+      const publicDomain = process.env.RAILWAY_PUBLIC_HOST || 'postgres-production-33ca.up.railway.app';
+      databaseUrl = databaseUrl.replace('postgres.railway.internal', publicDomain);
+      console.log('Replaced Railway internal domain with public domain');
+    }
+
+    console.log('Using full DATABASE_URL connection string');
+    return {
+      type: 'postgres' as const,
+      url: databaseUrl,
+      entities: [Shop, Store, Category, Company, Item, Sale, SaleItem, Order, OrderItem, Purchase, Expense, Issue, User],
+      synchronize: true, // Set to false in production
+    };
+  }
+
+  // Otherwise, use individual configuration
+  const config = {
+    type: 'postgres' as const,
+    host: process.env.DB_HOST || databaseUrl || 'localhost',
+    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 5432,
+    username: process.env.DB_USERNAME || 'postgres',
+    password: (process.env.DB_PASSWORD || '').toString(),
+    database: process.env.DB_DATABASE || 'ims',
+    entities: [Shop, Store, Category, Company, Item, Sale, Expense, Issue, User],
+    synchronize: true, // Set to false in production
+  };
+
+  console.log('Using individual config:', {
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    database: config.database,
+    hasPassword: !!config.password && config.password.length > 0,
+  });
+
+  return config;
+}
+
+@Module({
+  imports: [
+    TypeOrmModule.forRoot(getTypeOrmConfig()),
+    ShopsModule,
+    StoresModule,
+    CompaniesModule,
+    ItemsModule,
+    SalesModule,
+    OrdersModule,
+    PurchasesModule,
+    ExpenseModule,
+    CategoryModule,
+    ItemModule,
+    IssuesModule,
+    AuthModule,
+    UsersModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
