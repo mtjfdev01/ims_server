@@ -5,9 +5,10 @@ import { PurchasesController } from './purchases.controller';
 import { Purchase } from './entities/purchase.entity';
 import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { StockLotsModule } from '../stock-lots/stock-lots.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Purchase, Item, Shop])],
+  imports: [TypeOrmModule.forFeature([Purchase, Item, Shop]), StockLotsModule],
   controllers: [PurchasesController],
   providers: [PurchasesService],
   exports: [PurchasesService],

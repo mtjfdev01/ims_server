@@ -11,7 +11,6 @@ import { OrdersModule } from './orders/orders.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { ExpenseModule } from './expense/expense.module';
 import { CategoryModule } from './category/category.module';
-import { ItemModule } from './item/item.module';
 import { IssuesModule } from './issues/issues.module';
 import { Shop } from './shops/entities/shop.entity';
 import { Store } from './stores/entities/store.entity';
@@ -26,8 +25,16 @@ import { Purchase } from './purchases/entities/purchase.entity';
 import { Expense } from './expense/entities/expense.entity';
 import { Issue } from './issues/entities/issue.entity';
 import { User } from './users/entities/user.entity';
+import { StockLot } from './stock-lots/entities/stock-lot.entity';
+import { StockAllocation } from './stock-lots/entities/stock-allocation.entity';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { StockLotsModule } from './stock-lots/stock-lots.module';
+
+const ALL_ENTITIES = [
+  Shop, Store, Category, Company, Item, Sale, SaleItem, Order, OrderItem,
+  Purchase, Expense, Issue, User, StockLot, StockAllocation,
+];
 
 // Get database configuration
 function getTypeOrmConfig() {
@@ -52,7 +59,7 @@ function getTypeOrmConfig() {
     return {
       type: 'postgres' as const,
       url: databaseUrl,
-      entities: [Shop, Store, Category, Company, Item, Sale, SaleItem, Order, OrderItem, Purchase, Expense, Issue, User],
+      entities: ALL_ENTITIES,
       synchronize: true, // Set to false in production
     };
   }
@@ -65,7 +72,7 @@ function getTypeOrmConfig() {
     username: process.env.DB_USERNAME || 'postgres',
     password: (process.env.DB_PASSWORD || '').toString(),
     database: process.env.DB_DATABASE || 'ims',
-    entities: [Shop, Store, Category, Company, Item, Sale, Expense, Issue, User],
+    entities: ALL_ENTITIES,
     synchronize: true, // Set to false in production
   };
 
@@ -92,8 +99,8 @@ function getTypeOrmConfig() {
     PurchasesModule,
     ExpenseModule,
     CategoryModule,
-    ItemModule,
     IssuesModule,
+    StockLotsModule,
     AuthModule,
     UsersModule,
   ],

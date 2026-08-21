@@ -8,11 +8,13 @@ import { Category } from '../category/entities/category.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { PurchasesModule } from '../purchases/purchases.module';
+import { StockLotsModule } from '../stock-lots/stock-lots.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Item, Company, Category, Store, Shop]),
     forwardRef(() => PurchasesModule),
+    StockLotsModule,
   ],
   controllers: [ItemsController],
   providers: [ItemsService],

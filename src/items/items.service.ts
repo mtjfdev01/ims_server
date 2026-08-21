@@ -1,6 +1,6 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { DataSource, Repository, In } from 'typeorm';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { Item } from './entities/item.entity';
@@ -9,6 +9,7 @@ import { Category } from '../category/entities/category.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { PurchasesService } from '../purchases/purchases.service';
+import { FifoService } from '../stock-lots/fifo.service';
 
 @Injectable()
 export class ItemsService {
@@ -25,80 +26,84 @@ export class ItemsService {
     private shopRepository: Repository<Shop>,
     @Inject(forwardRef(() => PurchasesService))
     private purchasesService: PurchasesService,
+    private fifoService: FifoService,
+    private dataSource: DataSource,
   ) {}
 
   async create(createItemDto: CreateItemDto): Promise<Item> {
-    // Validate required fields
     if (!createItemDto.name || !createItemDto.name.trim()) {
-      throw new Error('Item name is required');
+      throw new BadRequestException('Item name is required');
     }
     if (!createItemDto.company || typeof createItemDto.company !== 'number') {
-      throw new Error('Company is required and must be a valid ID');
+      throw new BadRequestException('Company is required and must be a valid ID');
     }
 
-    const item = this.itemsRepository.create({
-      name: createItemDto.name.trim(),
-      location: createItemDto.location,
-      quantity: createItemDto.quantity || 1,
-      purchasePrice: createItemDto.purchasePrice,
-      minimumSalePrice: createItemDto.minimumSalePrice,
-    });
+    return this.dataSource.transaction(async (em) => {
+      const itemRepo = em.getRepository(Item);
+      const companyRepo = em.getRepository(Company);
+      const categoryRepo = em.getRepository(Category);
+      const storeRepo = em.getRepository(Store);
+      const shopRepo = em.getRepository(Shop);
 
-    // Set company relationship
-    const company = await this.companyRepository.findOne({
-      where: { id: createItemDto.company },
-    });
-    if (!company) {
-      throw new Error(`Company with ID ${createItemDto.company} not found`);
-    }
-    item.company = company;
-
-    // Set categories relationship
-    if (createItemDto.categories && createItemDto.categories.length > 0) {
-      const categories = await this.categoryRepository.findBy({
-        id: In(createItemDto.categories),
+      const item = itemRepo.create({
+        name: createItemDto.name.trim(),
+        location: createItemDto.location,
+        quantity: 0,
+        purchasePrice: createItemDto.purchasePrice || 0,
+        minimumSalePrice: createItemDto.minimumSalePrice,
       });
-      item.categories = categories;
-    }
 
-    // Set store relationship (optional)
-    if (createItemDto.storeId) {
-      const store = await this.storeRepository.findOne({
-        where: { id: createItemDto.storeId },
+      const company = await companyRepo.findOne({
+        where: { id: createItemDto.company },
       });
-      if (store) {
-        item.store = store;
+      if (!company) {
+        throw new BadRequestException(`Company with ID ${createItemDto.company} not found`);
       }
-    }
+      item.company = company;
 
-    // Set shop relationship (optional)
-    if (createItemDto.shopId) {
-      const shop = await this.shopRepository.findOne({
-        where: { id: createItemDto.shopId },
-      });
-      if (shop) {
-        item.shop = shop;
+      if (createItemDto.categories && createItemDto.categories.length > 0) {
+        const categories = await categoryRepo.findBy({
+          id: In(createItemDto.categories),
+        });
+        item.categories = categories;
       }
-    }
 
-    const savedItem = await this.itemsRepository.save(item);
+      if (createItemDto.storeId) {
+        const store = await storeRepo.findOne({ where: { id: createItemDto.storeId } });
+        if (store) {
+          item.store = store;
+        }
+      }
 
-    // Create purchase record automatically when item is created
-    if (createItemDto.purchasePrice) {
-      try {
+      if (createItemDto.shopId) {
+        const shop = await shopRepo.findOne({ where: { id: createItemDto.shopId } });
+        if (shop) {
+          item.shop = shop;
+          item.store = null;
+        }
+      }
+
+      const savedItem = await itemRepo.save(item);
+      const openingQty = createItemDto.quantity || 0;
+      if (openingQty > 0) {
         await this.purchasesService.create({
           itemId: savedItem.id,
-          purchasePrice: createItemDto.purchasePrice,
-          quantity: createItemDto.quantity || 1,
+          purchasePrice: createItemDto.purchasePrice || 0,
+          quantity: openingQty,
           purchaseDate: new Date().toISOString().split('T')[0],
-        });
-      } catch (error) {
-        console.error('Error creating purchase record:', error);
-        // Don't fail item creation if purchase creation fails
+          shopId: createItemDto.shopId,
+        }, em);
       }
-    }
 
-    return savedItem;
+      const result = await itemRepo.findOne({
+        where: { id: savedItem.id },
+        relations: ['company', 'categories', 'store', 'shop'],
+      });
+      if (!result) {
+        throw new BadRequestException('Failed to reload item after creation');
+      }
+      return result;
+    });
   }
 
   findAll(filterType?: 'store' | 'shop', search?: string): Promise<Item[]> {
@@ -108,8 +113,6 @@ export class ItemsService {
       .leftJoinAndSelect('item.store', 'store')
       .leftJoinAndSelect('item.shop', 'shop')
       .where('item.is_archived = :archived', { archived: false });
-
-    let hasWhere = true;
 
     if (filterType === 'store') {
       queryBuilder.andWhere('item.store_id IS NOT NULL');
@@ -125,91 +128,132 @@ export class ItemsService {
     return queryBuilder.getMany();
   }
 
-  findOne(id: number): Promise<Item | null> {
-    return this.itemsRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['company', 'categories', 'store', 'shop'],
-    });
-  }
-
-  async update(id: number, updateItemDto: UpdateItemDto): Promise<Item | null> {
+  async findOne(id: number): Promise<any> {
     const item = await this.itemsRepository.findOne({
       where: { id, is_archived: false },
       relations: ['company', 'categories', 'store', 'shop'],
     });
-
     if (!item) {
       return null;
     }
 
-    // Update basic fields
-    if (updateItemDto.name !== undefined) {
-      item.name = updateItemDto.name;
-    }
-    if (updateItemDto.location !== undefined) {
-      item.location = updateItemDto.location;
-    }
-    if (updateItemDto.quantity !== undefined) {
-      item.quantity = updateItemDto.quantity;
-    }
-    if (updateItemDto.purchasePrice !== undefined) {
-      item.purchasePrice = updateItemDto.purchasePrice;
-    }
-    if (updateItemDto.minimumSalePrice !== undefined) {
-      item.minimumSalePrice = updateItemDto.minimumSalePrice;
-    }
+    const lots = await this.fifoService.getRemainingLots(id);
+    const remainingLots = lots.filter(lot => lot.remainingQuantity > 0);
+    const fifoValue = remainingLots.reduce(
+      (sum, lot) => sum + lot.remainingQuantity * Number(lot.unitCost),
+      0,
+    );
 
-    // Update company relationship
-    if (updateItemDto.company !== undefined) {
-      const company = await this.companyRepository.findOne({
-        where: { id: updateItemDto.company },
+    return {
+      ...item,
+      lots: remainingLots.map(lot => ({
+        id: lot.id,
+        remainingQuantity: lot.remainingQuantity,
+        originalQuantity: lot.originalQuantity,
+        unitCost: Number(lot.unitCost),
+        receivedAt: lot.receivedAt,
+      })),
+      fifoValue: parseFloat(fifoValue.toFixed(2)),
+    };
+  }
+
+  async update(id: number, updateItemDto: UpdateItemDto): Promise<Item | null> {
+    return this.dataSource.transaction(async (em) => {
+      const itemRepo = em.getRepository(Item);
+      const companyRepo = em.getRepository(Company);
+      const categoryRepo = em.getRepository(Category);
+      const storeRepo = em.getRepository(Store);
+      const shopRepo = em.getRepository(Shop);
+
+      const item = await itemRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['company', 'categories', 'store', 'shop'],
       });
-      if (company) {
-        item.company = company;
-      }
-    }
 
-    // Update categories relationship
-    if (updateItemDto.categories !== undefined) {
-      if (updateItemDto.categories.length > 0) {
-        const categories = await this.categoryRepository.findBy({
-          id: In(updateItemDto.categories),
+      if (!item) {
+        return null;
+      }
+
+      if (updateItemDto.name !== undefined) {
+        item.name = updateItemDto.name;
+      }
+      if (updateItemDto.location !== undefined) {
+        item.location = updateItemDto.location;
+      }
+      if (updateItemDto.minimumSalePrice !== undefined) {
+        item.minimumSalePrice = updateItemDto.minimumSalePrice;
+      }
+
+      if (updateItemDto.company !== undefined) {
+        const company = await companyRepo.findOne({
+          where: { id: updateItemDto.company },
         });
-        item.categories = categories;
-      } else {
-        item.categories = [];
+        if (company) {
+          item.company = company;
+        }
       }
-    }
 
-    // Update store relationship
-    if (updateItemDto.storeId !== undefined) {
-      if (updateItemDto.storeId) {
-        const store = await this.storeRepository.findOne({
-          where: { id: updateItemDto.storeId },
-        });
-        item.store = store ?? null;
-        // If assigning to store, remove from shop
-        item.shop = null;
-      } else {
-        item.store = null;
+      if (updateItemDto.categories !== undefined) {
+        if (updateItemDto.categories.length > 0) {
+          const categories = await categoryRepo.findBy({
+            id: In(updateItemDto.categories),
+          });
+          item.categories = categories;
+        } else {
+          item.categories = [];
+        }
       }
-    }
 
-    // Update shop relationship
-    if (updateItemDto.shopId !== undefined) {
-      if (updateItemDto.shopId) {
-        const shop = await this.shopRepository.findOne({
-          where: { id: updateItemDto.shopId },
-        });
-        item.shop = shop ?? null;
-        // If assigning to shop, remove from store
-        item.store = null;
-      } else {
-        item.shop = null;
+      if (updateItemDto.storeId !== undefined) {
+        if (updateItemDto.storeId) {
+          const store = await storeRepo.findOne({
+            where: { id: updateItemDto.storeId },
+          });
+          item.store = store ?? null;
+          item.shop = null;
+        } else {
+          item.store = null;
+        }
       }
-    }
 
-    return this.itemsRepository.save(item);
+      if (updateItemDto.shopId !== undefined) {
+        if (updateItemDto.shopId) {
+          const shop = await shopRepo.findOne({
+            where: { id: updateItemDto.shopId },
+          });
+          item.shop = shop ?? null;
+          item.store = null;
+        } else {
+          item.shop = null;
+        }
+      }
+
+      await itemRepo.save(item);
+
+      if (updateItemDto.quantity !== undefined) {
+        await this.fifoService.ensureLots(em, item);
+        const refreshed = await this.fifoService.refreshItem(em, item.id);
+        const currentQty = refreshed.quantity || 0;
+        const nextQty = updateItemDto.quantity;
+        if (nextQty > currentQty) {
+          await this.fifoService.addStock(
+            em,
+            refreshed,
+            nextQty - currentQty,
+            Number(updateItemDto.purchasePrice ?? refreshed.purchasePrice) || 0,
+            new Date(),
+          );
+        } else if (nextQty < currentQty) {
+          await this.fifoService.consume(em, refreshed, currentQty - nextQty);
+        }
+      }
+
+      const result = await itemRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['company', 'categories', 'store', 'shop'],
+      });
+      return result;
+    });
   }
 
   async remove(id: number): Promise<boolean> {
@@ -221,7 +265,6 @@ export class ItemsService {
       return false;
     }
 
-    // Soft delete: mark as archived instead of deleting
     item.is_archived = true;
     await this.itemsRepository.save(item);
     return true;
@@ -261,133 +304,130 @@ export class ItemsService {
     toShopId?: number;
     notes?: string;
   }): Promise<{ sourceItem: Item; destinationItem: Item }> {
-    const sourceItem = await this.itemsRepository.findOne({
-      where: { id: transferDto.itemId, is_archived: false },
-      relations: ['store', 'shop', 'company', 'categories'],
+    return this.dataSource.transaction(async (em) => {
+      const itemRepo = em.getRepository(Item);
+      const storeRepo = em.getRepository(Store);
+      const shopRepo = em.getRepository(Shop);
+
+      const sourceItem = await itemRepo.findOne({
+        where: { id: transferDto.itemId, is_archived: false },
+        relations: ['store', 'shop', 'company', 'categories'],
+      });
+
+      if (!sourceItem) {
+        throw new BadRequestException('Item not found');
+      }
+
+      const transferQuantity = transferDto.quantity || 1;
+      if (transferQuantity <= 0) {
+        throw new BadRequestException('Transfer quantity must be greater than 0');
+      }
+
+      if (transferDto.fromStoreId) {
+        if (!sourceItem.store || sourceItem.store.id !== transferDto.fromStoreId) {
+          throw new BadRequestException('Item is not in the specified store');
+        }
+      } else if (transferDto.fromShopId) {
+        if (!sourceItem.shop || sourceItem.shop.id !== transferDto.fromShopId) {
+          throw new BadRequestException('Item is not in the specified shop');
+        }
+      } else {
+        throw new BadRequestException('Source location must be specified');
+      }
+
+      let destinationStore: Store | null = null;
+      let destinationShop: Shop | null = null;
+
+      if (transferDto.toStoreId) {
+        destinationStore = await storeRepo.findOne({
+          where: { id: transferDto.toStoreId },
+        });
+        if (!destinationStore) {
+          throw new BadRequestException('Destination store not found');
+        }
+      } else if (transferDto.toShopId) {
+        destinationShop = await shopRepo.findOne({
+          where: { id: transferDto.toShopId },
+        });
+        if (!destinationShop) {
+          throw new BadRequestException('Destination shop not found');
+        }
+      } else {
+        throw new BadRequestException('Destination location must be specified');
+      }
+
+      const categoryIds = sourceItem.categories?.map(c => c.id) || [];
+      let destinationItem: Item | null = null;
+
+      if (destinationStore) {
+        destinationItem = await itemRepo.findOne({
+          where: {
+            company: { id: sourceItem.company.id },
+            store: { id: destinationStore.id },
+            is_archived: false,
+          },
+          relations: ['company', 'categories', 'store', 'shop'],
+        });
+      } else if (destinationShop) {
+        destinationItem = await itemRepo.findOne({
+          where: {
+            company: { id: sourceItem.company.id },
+            shop: { id: destinationShop.id },
+            is_archived: false,
+          },
+          relations: ['company', 'categories', 'store', 'shop'],
+        });
+      }
+
+      if (destinationItem) {
+        const destCategoryIds = [...(destinationItem.categories?.map(c => c.id) || [])].sort();
+        const sourceCategoryIds = [...categoryIds].sort();
+        const categoriesMatch =
+          destCategoryIds.length === sourceCategoryIds.length &&
+          destCategoryIds.every((catId, idx) => catId === sourceCategoryIds[idx]);
+
+        if (!categoriesMatch || destinationItem.name !== sourceItem.name) {
+          destinationItem = null;
+        }
+      }
+
+      if (!destinationItem) {
+        destinationItem = await itemRepo.save(itemRepo.create({
+          name: sourceItem.name,
+          company: sourceItem.company,
+          categories: sourceItem.categories,
+          store: destinationStore,
+          shop: destinationShop,
+          location: sourceItem.location,
+          quantity: 0,
+          purchasePrice: sourceItem.purchasePrice,
+          minimumSalePrice: sourceItem.minimumSalePrice,
+        }));
+      }
+
+      if (!destinationItem) {
+        throw new BadRequestException('Failed to resolve destination item');
+      }
+
+      await this.fifoService.transferLots(em, sourceItem, destinationItem, transferQuantity);
+
+      const updatedSource = await itemRepo.findOne({
+        where: { id: sourceItem.id },
+        relations: ['store', 'shop', 'company', 'categories'],
+      });
+      const updatedDestination = await itemRepo.findOne({
+        where: { id: destinationItem.id },
+        relations: ['store', 'shop', 'company', 'categories'],
+      });
+
+      return {
+        sourceItem: updatedSource as Item,
+        destinationItem: updatedDestination as Item,
+      };
     });
-
-    if (!sourceItem) {
-      throw new Error('Item not found');
-    }
-
-    // Validate quantity
-    const transferQuantity = transferDto.quantity || 1;
-    if (transferQuantity <= 0) {
-      throw new Error('Transfer quantity must be greater than 0');
-    }
-    if (transferQuantity > sourceItem.quantity) {
-      throw new Error(`Cannot transfer ${transferQuantity} units. Only ${sourceItem.quantity} units available.`);
-    }
-
-    // Verify item is in the source location
-    if (transferDto.fromStoreId) {
-      if (!sourceItem.store || sourceItem.store.id !== transferDto.fromStoreId) {
-        throw new Error('Item is not in the specified store');
-      }
-    } else if (transferDto.fromShopId) {
-      if (!sourceItem.shop || sourceItem.shop.id !== transferDto.fromShopId) {
-        throw new Error('Item is not in the specified shop');
-      }
-    } else {
-      throw new Error('Source location must be specified');
-    }
-
-    // Get destination
-    let destinationStore: Store | null = null;
-    let destinationShop: Shop | null = null;
-
-    if (transferDto.toStoreId) {
-      destinationStore = await this.storeRepository.findOne({
-        where: { id: transferDto.toStoreId },
-      });
-      if (!destinationStore) {
-        throw new Error('Destination store not found');
-      }
-    } else if (transferDto.toShopId) {
-      destinationShop = await this.shopRepository.findOne({
-        where: { id: transferDto.toShopId },
-      });
-      if (!destinationShop) {
-        throw new Error('Destination shop not found');
-      }
-    } else {
-      throw new Error('Destination location must be specified');
-    }
-
-    // Check if same item exists in destination (same company, same categories)
-    const categoryIds = sourceItem.categories?.map(c => c.id) || [];
-    let destinationItem: Item | null = null;
-    
-    if (destinationStore) {
-      destinationItem = await this.itemsRepository.findOne({
-        where: {
-          company: { id: sourceItem.company.id },
-          store: { id: destinationStore.id },
-          is_archived: false,
-        },
-        relations: ['company', 'categories', 'store', 'shop'],
-      });
-    } else if (destinationShop) {
-      destinationItem = await this.itemsRepository.findOne({
-        where: {
-          company: { id: sourceItem.company.id },
-          shop: { id: destinationShop.id },
-          is_archived: false,
-        },
-        relations: ['company', 'categories', 'store', 'shop'],
-      });
-    }
-
-    // If item exists in destination, check if categories match
-    if (destinationItem) {
-      const destCategoryIds = destinationItem.categories?.map(c => c.id).sort() || [];
-      const sourceCategoryIds = categoryIds.sort();
-      const categoriesMatch = 
-        destCategoryIds.length === sourceCategoryIds.length &&
-        destCategoryIds.every((id, idx) => id === sourceCategoryIds[idx]);
-
-      if (!categoriesMatch) {
-        destinationItem = null; // Categories don't match, create new item
-      }
-    }
-
-    // Reduce quantity from source item
-    sourceItem.quantity = sourceItem.quantity - transferQuantity;
-    if (sourceItem.quantity === 0) {
-      // If quantity becomes 0, remove from source location
-      sourceItem.store = null;
-      sourceItem.shop = null;
-    }
-
-    // Add quantity to destination
-    if (destinationItem) {
-      // Item exists in destination, increase quantity
-      destinationItem.quantity = destinationItem.quantity + transferQuantity;
-      await this.itemsRepository.save(destinationItem);
-    } else {
-      // Item doesn't exist in destination, create new item
-      const newItem = this.itemsRepository.create({
-        name: sourceItem.name,
-        company: sourceItem.company,
-        categories: sourceItem.categories,
-        store: destinationStore,
-        shop: destinationShop,
-        location: sourceItem.location,
-        quantity: transferQuantity,
-        purchasePrice: sourceItem.purchasePrice,
-        minimumSalePrice: sourceItem.minimumSalePrice,
-      });
-      destinationItem = await this.itemsRepository.save(newItem);
-    }
-
-    // Save source item
-    await this.itemsRepository.save(sourceItem);
-
-    return { sourceItem, destinationItem };
   }
 
   async removeAll(): Promise<number> {
-    // Soft delete: mark all items as archived
     const result = await this.itemsRepository.update({ is_archived: false }, { is_archived: true });
     return result.affected || 0;
   }

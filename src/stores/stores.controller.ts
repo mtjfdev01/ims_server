@@ -17,15 +17,6 @@ export class StoresController {
     return this.storesService.findAll();
   }
 
-  @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const store = await this.storesService.findOne(+id);
-    if (!store) {
-      return { error: 'Store not found' };
-    }
-    return store;
-  }
-
   @Get(':id/items')
   async getStoreItems(@Param('id') id: string) {
     return this.storesService.getItems(+id);
@@ -35,6 +26,15 @@ export class StoresController {
   async getAssetValue(@Param('id') id: string) {
     const value = await this.storesService.getAssetValue(+id);
     return { assetValue: value };
+  }
+
+  @Get(':id')
+  async findOne(@Param('id') id: string) {
+    const store = await this.storesService.findOne(+id);
+    if (!store) {
+      return { error: 'Store not found' };
+    }
+    return store;
   }
 
   @Patch(':id')

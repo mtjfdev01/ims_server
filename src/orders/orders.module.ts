@@ -8,9 +8,13 @@ import { Item } from '../items/entities/item.entity';
 import { Sale } from '../sales/entities/sale.entity';
 import { SaleItem } from '../sale-items/entities/sale-item.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { StockLotsModule } from '../stock-lots/stock-lots.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderItem, Item, Sale, SaleItem, Shop])],
+  imports: [
+    TypeOrmModule.forFeature([Order, OrderItem, Item, Sale, SaleItem, Shop]),
+    StockLotsModule,
+  ],
   controllers: [OrdersController],
   providers: [OrdersService],
 })

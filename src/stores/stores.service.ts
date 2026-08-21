@@ -6,6 +6,7 @@ import { UpdateStoreDto } from './dto/update-store.dto';
 import { Store } from './entities/store.entity';
 import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { FifoService } from '../stock-lots/fifo.service';
 
 @Injectable()
 export class StoresService {
@@ -16,6 +17,7 @@ export class StoresService {
     private itemRepository: Repository<Item>,
     @InjectRepository(Shop)
     private shopRepository: Repository<Shop>,
+    private fifoService: FifoService,
   ) {}
 
   async create(createStoreDto: CreateStoreDto): Promise<Store> {
@@ -106,15 +108,9 @@ export class StoresService {
   async getAssetValue(storeId: number): Promise<number> {
     const items = await this.itemRepository.find({
       where: { store: { id: storeId }, is_archived: false },
-      select: ['quantity', 'purchasePrice'],
+      select: ['id'],
     });
 
-    return items.reduce((total, item) => {
-      const price = typeof item.purchasePrice === 'string' 
-        ? parseFloat(item.purchasePrice) 
-        : item.purchasePrice;
-      const quantity = item.quantity || 1;
-      return total + (price || 0) * quantity;
-    }, 0);
+    return this.fifoService.getAssetValue(items.map(item => item.id));
   }
 }

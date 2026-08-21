@@ -1,9 +1,10 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, ManyToMany, JoinTable } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, ManyToMany, JoinTable, OneToMany } from 'typeorm';
 import { Company } from '../../companies/entities/company.entity';
 import { Category } from '../../category/entities/category.entity';
 import { Store } from '../../stores/entities/store.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
+import { StockLot } from '../../stock-lots/entities/stock-lot.entity';
 
 @Entity('items')
 export class Item {
@@ -48,6 +49,9 @@ export class Item {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })
   createdBy: User | null;
+
+  @OneToMany(() => StockLot, lot => lot.item)
+  lots: StockLot[];
 
   @Column({ default: false })
   is_archived: boolean;

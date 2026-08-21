@@ -2,6 +2,7 @@ import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, OneToMany, Ma
 import { SaleItem } from '../../sale-items/entities/sale-item.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
+import { Order } from '../../orders/entities/order.entity';
 
 @Entity('sales')
 export class Sale {
@@ -20,6 +21,10 @@ export class Sale {
   @ManyToOne(() => Shop, { nullable: true })
   @JoinColumn({ name: 'shop_id' })
   shop: Shop | null;
+
+  @ManyToOne(() => Order, { nullable: true })
+  @JoinColumn({ name: 'order_id' })
+  order: Order | null;
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundException } from '@nestjs/common';
 import { ItemsService } from './items.service';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
@@ -10,6 +10,16 @@ export class ItemsController {
   @Post()
   async create(@Body() createItemDto: CreateItemDto) {
     return this.itemsService.create(createItemDto);
+  }
+
+  @Post('transfer')
+  async transfer(@Body() transferDto: any) {
+    const result = await this.itemsService.transfer(transferDto);
+    return {
+      message: `Successfully transferred ${transferDto.quantity} unit(s)`,
+      sourceItem: result.sourceItem,
+      destinationItem: result.destinationItem
+    };
   }
 
   @Get()
@@ -32,7 +42,7 @@ export class ItemsController {
   async findOne(@Param('id') id: string) {
     const item = await this.itemsService.findOne(+id);
     if (!item) {
-      return { error: 'Item not found' };
+      throw new NotFoundException('Item not found');
     }
     return item;
   }
@@ -41,23 +51,9 @@ export class ItemsController {
   async update(@Param('id') id: string, @Body() updateItemDto: UpdateItemDto) {
     const item = await this.itemsService.update(+id, updateItemDto);
     if (!item) {
-      return { error: 'Item not found' };
+      throw new NotFoundException('Item not found');
     }
     return item;
-  }
-
-  @Post('transfer')
-  async transfer(@Body() transferDto: any) {
-    try {
-      const result = await this.itemsService.transfer(transferDto);
-      return {
-        message: `Successfully transferred ${transferDto.quantity} unit(s)`,
-        sourceItem: result.sourceItem,
-        destinationItem: result.destinationItem
-      };
-    } catch (error) {
-      return { error: error.message };
-    }
   }
 
   @Delete('all')
@@ -70,7 +66,7 @@ export class ItemsController {
   async remove(@Param('id') id: string) {
     const result = await this.itemsService.remove(+id);
     if (!result) {
-      return { error: 'Item not found' };
+      throw new NotFoundException('Item not found');
     }
     return { message: 'Item deleted successfully' };
   }

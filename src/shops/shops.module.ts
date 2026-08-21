@@ -6,9 +6,10 @@ import { Shop } from './entities/shop.entity';
 import { Item } from '../items/entities/item.entity';
 import { Store } from '../stores/entities/store.entity';
 import { User } from '../users/entities/user.entity';
+import { StockLotsModule } from '../stock-lots/stock-lots.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shop, Item, Store, User])],
+  imports: [TypeOrmModule.forFeature([Shop, Item, Store, User]), StockLotsModule],
   controllers: [ShopsController],
   providers: [ShopsService],
 })

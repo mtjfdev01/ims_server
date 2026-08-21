@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
 import { Sale } from './entities/sale.entity';
@@ -9,6 +9,7 @@ import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
+import { FifoService } from '../stock-lots/fifo.service';
 
 @Injectable()
 export class SalesService {
@@ -21,98 +22,80 @@ export class SalesService {
     private itemRepository: Repository<Item>,
     @InjectRepository(Shop)
     private shopRepository: Repository<Shop>,
+    private fifoService: FifoService,
+    private dataSource: DataSource,
   ) {}
 
   async create(createSaleDto: CreateSaleDto): Promise<Sale> {
     if (!createSaleDto.items || createSaleDto.items.length === 0) {
-      throw new Error('Sale must have at least one item');
+      throw new BadRequestException('Sale must have at least one item');
     }
 
-    // Validate all items and quantities before processing
-    const itemValidations = await Promise.all(
-      createSaleDto.items.map(async (saleItemDto) => {
-        const item = await this.itemRepository.findOne({
+    return this.dataSource.transaction(async (em) => {
+      const itemRepo = em.getRepository(Item);
+      const shopRepo = em.getRepository(Shop);
+      const saleRepo = em.getRepository(Sale);
+      const saleItemRepo = em.getRepository(SaleItem);
+
+      const sale = saleRepo.create({
+        totalAmount: 0,
+        totalProfit: 0,
+      });
+
+      if (createSaleDto.shopId) {
+        const shop = await shopRepo.findOne({
+          where: { id: createSaleDto.shopId },
+        });
+        if (shop) {
+          sale.shop = shop;
+        }
+      }
+
+      const savedSale = await saleRepo.save(sale);
+      let totalAmount = 0;
+      let totalProfit = 0;
+
+      for (const saleItemDto of createSaleDto.items) {
+        const item = await itemRepo.findOne({
           where: { id: saleItemDto.itemId, is_archived: false },
         });
-
         if (!item) {
-          throw new Error(`Item with ID ${saleItemDto.itemId} not found`);
+          throw new BadRequestException(`Item with ID ${saleItemDto.itemId} not found`);
         }
-
         if (saleItemDto.quantity <= 0) {
-          throw new Error(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
+          throw new BadRequestException(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
         }
 
-        if (item.quantity < saleItemDto.quantity) {
-          throw new Error(
-            `Insufficient quantity for item ${item.name || item.id}. Available: ${item.quantity}, Requested: ${saleItemDto.quantity}`
-          );
-        }
+        const saleItem = await saleItemRepo.save(saleItemRepo.create({
+          sale: savedSale,
+          item,
+          quantity: saleItemDto.quantity,
+          amount: saleItemDto.amount,
+          profit: 0,
+        }));
 
-        return { item, saleItemDto };
-      })
-    );
+        const { cogs } = await this.fifoService.consume(em, item, saleItemDto.quantity, { saleItem });
+        const profit = parseFloat((Number(saleItemDto.amount) - cogs).toFixed(2));
+        saleItem.profit = profit;
+        await saleItemRepo.save(saleItem);
 
-    // Calculate totals
-    let totalAmount = 0;
-    let totalProfit = 0;
-
-    // Create sale with sale items
-    const sale = this.salesRepository.create({
-      totalAmount: 0,
-      totalProfit: 0,
-    });
-
-    // Set shop if provided
-    if (createSaleDto.shopId) {
-      const shop = await this.shopRepository.findOne({
-        where: { id: createSaleDto.shopId },
-      });
-      if (shop) {
-        sale.shop = shop;
+        totalAmount += Number(saleItemDto.amount);
+        totalProfit += profit;
       }
-    }
 
-    const savedSale = await this.salesRepository.save(sale);
+      savedSale.totalAmount = parseFloat(totalAmount.toFixed(2));
+      savedSale.totalProfit = parseFloat(totalProfit.toFixed(2));
+      await saleRepo.save(savedSale);
 
-    // Create sale items and update item quantities
-    const saleItems: SaleItem[] = [];
-    for (const { item, saleItemDto } of itemValidations) {
-      // Create sale item
-      const saleItem = this.saleItemRepository.create({
-        sale: savedSale,
-        item: item,
-        quantity: saleItemDto.quantity,
-        profit: saleItemDto.profit,
-        amount: saleItemDto.amount,
+      const result = await saleRepo.findOne({
+        where: { id: savedSale.id, is_archived: false },
+        relations: ['saleItems', 'saleItems.item', 'shop'],
       });
-
-      const savedSaleItem = await this.saleItemRepository.save(saleItem);
-      saleItems.push(savedSaleItem);
-
-      // Decrement item quantity
-      item.quantity = item.quantity - saleItemDto.quantity;
-      await this.itemRepository.save(item);
-
-      // Accumulate totals
-      totalAmount += saleItemDto.amount;
-      totalProfit += saleItemDto.profit;
-    }
-
-    // Update sale with totals
-    savedSale.totalAmount = totalAmount;
-    savedSale.totalProfit = totalProfit;
-    await this.salesRepository.save(savedSale);
-
-    // Reload with relations
-    const result = await this.salesRepository.findOne({
-      where: { id: savedSale.id, is_archived: false },
-      relations: ['saleItems', 'saleItems.item'],
+      if (!result) {
+        throw new BadRequestException('Failed to reload sale after creation');
+      }
+      return result;
     });
-    if (!result) {
-      throw new Error('Failed to reload sale after creation');
-    }
-    return result;
   }
 
   async findAll(filterDto?: FilterDto, shopId?: number) {
@@ -135,202 +118,119 @@ export class SalesService {
     });
   }
 
-  async findByShop(shopId: number, filterDto?: FilterDto) {
-    // Get all items that belong to this shop
-    const shopItems = await this.itemRepository.find({
-      where: { shop: { id: shopId }, is_archived: false },
-      select: ['id'],
-    });
-
-    const itemIds = shopItems.map(item => item.id);
-
-    if (itemIds.length === 0) {
-      return filterDto && (filterDto.page || filterDto.limit) 
-        ? { data: [], total: 0, page: 1, limit: 10, totalPages: 0 }
-        : [];
-    }
-
-    // Find sales that have items from this shop
-    // We need to find sales where at least one saleItem has an item from this shop
-    const salesWithShopItems = await this.salesRepository
-      .createQueryBuilder('sale')
-      .innerJoin('sale.saleItems', 'saleItem')
-      .innerJoin('saleItem.item', 'item')
-      .where('item.id IN (:...itemIds)', { itemIds })
-      .andWhere('sale.is_archived = :archived', { archived: false })
-      .getMany();
-
-    const saleIds = salesWithShopItems.map(s => s.id);
-
-    if (saleIds.length === 0) {
-      return filterDto && (filterDto.page || filterDto.limit) 
-        ? { data: [], total: 0, page: 1, limit: 10, totalPages: 0 }
-        : [];
-    }
-
-    // Build base where condition
-    const baseWhere = { id: In(saleIds), is_archived: false } as any;
-
-    if (filterDto && (filterDto.page || filterDto.limit || filterDto.date || filterDto.dateFrom || filterDto.dateTo)) {
-      return paginateWithFilters(
-        this.salesRepository,
-        filterDto,
-        baseWhere,
-        ['saleItems', 'saleItems.item'],
-        { dateField: 'createdAt' }
-      );
-    }
-
-    return this.salesRepository.find({
-      where: baseWhere,
-      relations: ['saleItems', 'saleItems.item'],
-    });
-  }
-
   findOne(id: number): Promise<Sale | null> {
     return this.salesRepository.findOne({
       where: { id, is_archived: false },
-      relations: ['saleItems', 'saleItems.item'],
+      relations: ['saleItems', 'saleItems.item', 'shop'],
     });
   }
 
   async update(id: number, updateSaleDto: UpdateSaleDto): Promise<Sale | null> {
-    const existingSale = await this.salesRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['saleItems', 'saleItems.item'],
-    });
+    return this.dataSource.transaction(async (em) => {
+      const saleRepo = em.getRepository(Sale);
+      const saleItemRepo = em.getRepository(SaleItem);
+      const itemRepo = em.getRepository(Item);
 
-    if (!existingSale) {
-      return null;
-    }
+      const existingSale = await saleRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['saleItems', 'saleItems.item', 'order'],
+      });
 
-    // If items are being updated
-    if (updateSaleDto.items !== undefined) {
+      if (!existingSale) {
+        return null;
+      }
+
+      if (existingSale.order) {
+        throw new BadRequestException('Cannot edit a sale that was created from a completed order');
+      }
+
+      if (updateSaleDto.items === undefined) {
+        return this.findOne(id);
+      }
+
       if (updateSaleDto.items.length === 0) {
-        throw new Error('Sale must have at least one item');
+        throw new BadRequestException('Sale must have at least one item');
       }
 
-      // Restore quantities from existing sale items
       for (const existingSaleItem of existingSale.saleItems) {
-        const item = await this.itemRepository.findOne({
-          where: { id: existingSaleItem.item.id, is_archived: false },
-        });
-        if (item) {
-          item.quantity = item.quantity + existingSaleItem.quantity;
-          await this.itemRepository.save(item);
-        }
+        await this.fifoService.restoreBySaleItem(em, existingSaleItem.id);
       }
+      await saleItemRepo.delete({ sale: { id } });
 
-      // Delete existing sale items
-      await this.saleItemRepository.delete({ sale: { id } });
-
-      // Validate new items and quantities
-      const itemValidations = await Promise.all(
-        updateSaleDto.items.map(async (saleItemDto) => {
-          const item = await this.itemRepository.findOne({
-            where: { id: saleItemDto.itemId, is_archived: false },
-          });
-
-          if (!item) {
-            throw new Error(`Item with ID ${saleItemDto.itemId} not found`);
-          }
-
-          if (saleItemDto.quantity <= 0) {
-            throw new Error(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
-          }
-
-          if (item.quantity < saleItemDto.quantity) {
-            throw new Error(
-              `Insufficient quantity for item ${item.name || item.id}. Available: ${item.quantity}, Requested: ${saleItemDto.quantity}`
-            );
-          }
-
-          return { item, saleItemDto };
-        })
-      );
-
-      // Create new sale items and update quantities
       let totalAmount = 0;
       let totalProfit = 0;
 
-      for (const { item, saleItemDto } of itemValidations) {
-        const saleItem = this.saleItemRepository.create({
-          sale: existingSale,
-          item: item,
-          quantity: saleItemDto.quantity,
-          profit: saleItemDto.profit,
-          amount: saleItemDto.amount,
+      for (const saleItemDto of updateSaleDto.items) {
+        const item = await itemRepo.findOne({
+          where: { id: saleItemDto.itemId, is_archived: false },
         });
+        if (!item) {
+          throw new BadRequestException(`Item with ID ${saleItemDto.itemId} not found`);
+        }
+        if (saleItemDto.quantity <= 0) {
+          throw new BadRequestException(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
+        }
 
-        await this.saleItemRepository.save(saleItem);
+        const saleItem = await saleItemRepo.save(saleItemRepo.create({
+          sale: existingSale,
+          item,
+          quantity: saleItemDto.quantity,
+          amount: saleItemDto.amount,
+          profit: 0,
+        }));
 
-        // Decrement item quantity
-        item.quantity = item.quantity - saleItemDto.quantity;
-        await this.itemRepository.save(item);
+        const { cogs } = await this.fifoService.consume(em, item, saleItemDto.quantity, { saleItem });
+        const profit = parseFloat((Number(saleItemDto.amount) - cogs).toFixed(2));
+        saleItem.profit = profit;
+        await saleItemRepo.save(saleItem);
 
-        totalAmount += saleItemDto.amount;
-        totalProfit += saleItemDto.profit;
+        totalAmount += Number(saleItemDto.amount);
+        totalProfit += profit;
       }
 
-      // Update sale totals
-      existingSale.totalAmount = totalAmount;
-      existingSale.totalProfit = totalProfit;
-      await this.salesRepository.save(existingSale);
-    }
+      existingSale.totalAmount = parseFloat(totalAmount.toFixed(2));
+      existingSale.totalProfit = parseFloat(totalProfit.toFixed(2));
+      await saleRepo.save(existingSale);
 
-    return this.findOne(id);
+      return saleRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['saleItems', 'saleItems.item', 'shop'],
+      });
+    });
   }
 
   async remove(id: number): Promise<boolean> {
-    const sale = await this.salesRepository.findOne({
-      where: { id },
-      relations: ['saleItems', 'saleItems.item'],
-    });
-
-    if (!sale) {
-      return false;
-    }
-
-    // Restore quantities for all items in the sale
-    for (const saleItem of sale.saleItems) {
-      const item = await this.itemRepository.findOne({
-        where: { id: saleItem.item.id },
+    return this.dataSource.transaction(async (em) => {
+      const saleRepo = em.getRepository(Sale);
+      const sale = await saleRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['saleItems', 'saleItems.item', 'order'],
       });
-      if (item) {
-        item.quantity = item.quantity + saleItem.quantity;
-        await this.itemRepository.save(item);
-      }
-    }
 
-    // Delete the sale (cascade will delete sale items)
-    const result = await this.salesRepository.delete(id);
-    return (result.affected ?? 0) > 0;
+      if (!sale) {
+        return false;
+      }
+
+      if (!sale.order) {
+        for (const saleItem of sale.saleItems) {
+          await this.fifoService.restoreBySaleItem(em, saleItem.id);
+        }
+      }
+
+      sale.is_archived = true;
+      await saleRepo.save(sale);
+      return true;
+    });
   }
 
   async getTotals(filterDto?: FilterDto, shopId?: number): Promise<{ totalAmount: number; totalProfit: number }> {
-    let queryBuilder = this.salesRepository.createQueryBuilder('sale')
+    const queryBuilder = this.salesRepository.createQueryBuilder('sale')
       .where('sale.is_archived = :archived', { archived: false });
-    let hasWhere = true;
 
-    // Apply shop filter if provided
     if (shopId) {
-      const shopItems = await this.itemRepository.find({
-        where: { shop: { id: shopId }, is_archived: false },
-        select: ['id'],
-      });
-      const itemIds = shopItems.map(item => item.id);
-      
-      if (itemIds.length > 0) {
-        queryBuilder
-          .innerJoin('sale.saleItems', 'saleItem')
-          .innerJoin('saleItem.item', 'item')
-          .andWhere('item.id IN (:...itemIds)', { itemIds });
-      } else {
-        return { totalAmount: 0, totalProfit: 0 };
-      }
+      queryBuilder.andWhere('sale.shop_id = :shopId', { shopId });
     }
 
-    // Apply date filters
     if (filterDto?.date) {
       const date = new Date(filterDto.date);
       queryBuilder.andWhere('DATE(sale.createdAt) = DATE(:date)', { date });

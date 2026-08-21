@@ -7,6 +7,7 @@ import { Shop } from './entities/shop.entity';
 import { Item } from '../items/entities/item.entity';
 import { Store } from '../stores/entities/store.entity';
 import { User } from '../users/entities/user.entity';
+import { FifoService } from '../stock-lots/fifo.service';
 import { PaginationDto, PaginationResult } from '../common/pagination.dto';
 import { paginate } from '../common/pagination.util';
 
@@ -21,6 +22,7 @@ export class ShopsService {
     private storeRepository: Repository<Store>,
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private fifoService: FifoService,
   ) {}
 
   async create(createShopDto: CreateShopDto, userId?: number): Promise<Shop> {
@@ -184,15 +186,9 @@ export class ShopsService {
 
     const items = await this.itemRepository.find({
       where: { shop: { id: shopId }, is_archived: false },
-      select: ['quantity', 'purchasePrice'],
+      select: ['id'],
     });
 
-    return items.reduce((total, item) => {
-      const price = typeof item.purchasePrice === 'string' 
-        ? parseFloat(item.purchasePrice) 
-        : item.purchasePrice;
-      const quantity = item.quantity || 1;
-      return total + (price || 0) * quantity;
-    }, 0);
+    return this.fifoService.getAssetValue(items.map(item => item.id));
   }
 }

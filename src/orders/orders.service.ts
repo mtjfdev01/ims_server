@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { Order, OrderStatus } from './entities/order.entity';
@@ -11,6 +11,8 @@ import { SaleItem } from '../sale-items/entities/sale-item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
+import { FifoService } from '../stock-lots/fifo.service';
+import { StockAllocation } from '../stock-lots/entities/stock-allocation.entity';
 
 @Injectable()
 export class OrdersService {
@@ -27,83 +29,73 @@ export class OrdersService {
     private salesRepository: Repository<Sale>,
     @InjectRepository(SaleItem)
     private saleItemRepository: Repository<SaleItem>,
+    private fifoService: FifoService,
+    private dataSource: DataSource,
   ) {}
 
   async create(createOrderDto: CreateOrderDto): Promise<Order> {
     if (!createOrderDto.items || createOrderDto.items.length === 0) {
-      throw new Error('Order must have at least one item');
+      throw new BadRequestException('Order must have at least one item');
     }
 
-    // Validate all items and quantities before processing
-    const itemValidations = await Promise.all(
-      createOrderDto.items.map(async (orderItemDto) => {
-        const item = await this.itemRepository.findOne({
-          where: { id: orderItemDto.itemId, is_archived: false },
-        });
+    return this.dataSource.transaction(async (em) => {
+      const itemRepo = em.getRepository(Item);
+      const shopRepo = em.getRepository(Shop);
+      const orderRepo = em.getRepository(Order);
+      const orderItemRepo = em.getRepository(OrderItem);
 
-        if (!item) {
-          throw new Error(`Item with ID ${orderItemDto.itemId} not found`);
-        }
-
-        if (orderItemDto.quantity <= 0) {
-          throw new Error(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
-        }
-
-        if (item.quantity < orderItemDto.quantity) {
-          throw new Error(
-            `Insufficient quantity for item ${item.name || item.id}. Available: ${item.quantity}, Requested: ${orderItemDto.quantity}`
-          );
-        }
-
-        return { item, orderItemDto };
-      })
-    );
-
-    // Calculate total amount
-    let totalAmount = 0;
-
-    // Create order
-    const order = this.ordersRepository.create({
-      status: createOrderDto.status || OrderStatus.PENDING,
-      totalAmount: 0,
-    });
-
-    const savedOrder = await this.ordersRepository.save(order);
-
-    // Create order items and update item quantities
-    for (const { item, orderItemDto } of itemValidations) {
-      // Create order item
-      const orderItem = this.orderItemRepository.create({
-        order: savedOrder,
-        item: item,
-        quantity: orderItemDto.quantity,
-        returnedQuantity: 0,
-        amount: orderItemDto.amount,
+      const order = orderRepo.create({
+        status: createOrderDto.status || OrderStatus.PENDING,
+        totalAmount: 0,
       });
 
-      await this.orderItemRepository.save(orderItem);
+      if (createOrderDto.shopId) {
+        const shop = await shopRepo.findOne({
+          where: { id: createOrderDto.shopId },
+        });
+        if (shop) {
+          order.shop = shop;
+        }
+      }
 
-      // Subtract item quantity (items issued for project)
-      item.quantity = item.quantity - orderItemDto.quantity;
-      await this.itemRepository.save(item);
+      const savedOrder = await orderRepo.save(order);
+      let totalAmount = 0;
 
-      // Accumulate total
-      totalAmount += orderItemDto.amount;
-    }
+      for (const orderItemDto of createOrderDto.items) {
+        const item = await itemRepo.findOne({
+          where: { id: orderItemDto.itemId, is_archived: false },
+        });
+        if (!item) {
+          throw new BadRequestException(`Item with ID ${orderItemDto.itemId} not found`);
+        }
+        if (orderItemDto.quantity <= 0) {
+          throw new BadRequestException(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
+        }
 
-    // Update order with total
-    savedOrder.totalAmount = totalAmount;
-    await this.ordersRepository.save(savedOrder);
+        const orderItem = await orderItemRepo.save(orderItemRepo.create({
+          order: savedOrder,
+          item,
+          quantity: orderItemDto.quantity,
+          returnedQuantity: 0,
+          amount: orderItemDto.amount,
+        }));
 
-    // Reload with relations
-    const result = await this.ordersRepository.findOne({
-      where: { id: savedOrder.id, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
+        await this.fifoService.consume(em, item, orderItemDto.quantity, { orderItem });
+        totalAmount += Number(orderItemDto.amount);
+      }
+
+      savedOrder.totalAmount = parseFloat(totalAmount.toFixed(2));
+      await orderRepo.save(savedOrder);
+
+      const result = await orderRepo.findOne({
+        where: { id: savedOrder.id, is_archived: false },
+        relations: ['orderItems', 'orderItems.item', 'shop'],
+      });
+      if (!result) {
+        throw new BadRequestException('Failed to reload order after creation');
+      }
+      return result;
     });
-    if (!result) {
-      throw new Error('Failed to reload order after creation');
-    }
-    return result;
   }
 
   async findAll(filterDto?: FilterDto, shopId?: number) {
@@ -129,291 +121,271 @@ export class OrdersService {
   findOne(id: number): Promise<Order | null> {
     return this.ordersRepository.findOne({
       where: { id, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
+      relations: ['orderItems', 'orderItems.item', 'shop'],
     });
   }
 
   async update(id: number, updateOrderDto: UpdateOrderDto): Promise<Order | null> {
-    const existingOrder = await this.ordersRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
-    });
+    return this.dataSource.transaction(async (em) => {
+      const orderRepo = em.getRepository(Order);
+      const orderItemRepo = em.getRepository(OrderItem);
+      const itemRepo = em.getRepository(Item);
 
-    if (!existingOrder) {
-      return null;
-    }
+      const existingOrder = await orderRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['orderItems', 'orderItems.item', 'shop'],
+      });
 
-    // Handle status change to COMPLETED - create sale automatically
-    if (updateOrderDto.status === OrderStatus.COMPLETED && existingOrder.status !== OrderStatus.COMPLETED) {
-      await this.createSaleFromOrder(existingOrder);
-    }
-
-    // Handle items update
-    if (updateOrderDto.items !== undefined) {
-      if (updateOrderDto.items.length === 0) {
-        throw new Error('Order must have at least one item');
+      if (!existingOrder) {
+        return null;
       }
 
-      // Create a map of existing order items by itemId to preserve returnedQuantity and track what to restore
-      const existingItemsMap = new Map<number, { returnedQty: number; quantity: number }>();
-      for (const existingOrderItem of existingOrder.orderItems) {
-        existingItemsMap.set(existingOrderItem.item.id, {
-          returnedQty: existingOrderItem.returnedQuantity || 0,
-          quantity: existingOrderItem.quantity
-        });
-      }
-
-      // Restore quantities from existing order items (only net issued quantities)
-      for (const existingOrderItem of existingOrder.orderItems) {
-        const item = await this.itemRepository.findOne({
-          where: { id: existingOrderItem.item.id, is_archived: false },
-        });
-        if (item) {
-          // Restore the net issued quantity (quantity - returnedQuantity)
-          const netIssuedQuantity = existingOrderItem.quantity - (existingOrderItem.returnedQuantity || 0);
-          item.quantity = item.quantity + netIssuedQuantity;
-          await this.itemRepository.save(item);
+      if (updateOrderDto.items !== undefined) {
+        if (existingOrder.status === OrderStatus.COMPLETED) {
+          throw new BadRequestException('Cannot change items on a completed order');
         }
-      }
+        if (updateOrderDto.items.length === 0) {
+          throw new BadRequestException('Order must have at least one item');
+        }
 
-      // Delete existing order items
-      await this.orderItemRepository.delete({ order: { id } });
+        for (const existingOrderItem of existingOrder.orderItems) {
+          await this.fifoService.restoreByOrderItem(em, existingOrderItem.id);
+        }
+        await orderItemRepo.delete({ order: { id } });
 
-      // Validate new items and quantities
-      const itemValidations = await Promise.all(
-        updateOrderDto.items.map(async (orderItemDto) => {
-          const item = await this.itemRepository.findOne({
+        let totalAmount = 0;
+        for (const orderItemDto of updateOrderDto.items) {
+          const item = await itemRepo.findOne({
             where: { id: orderItemDto.itemId, is_archived: false },
           });
-
           if (!item) {
-            throw new Error(`Item with ID ${orderItemDto.itemId} not found`);
+            throw new BadRequestException(`Item with ID ${orderItemDto.itemId} not found`);
           }
-
           if (orderItemDto.quantity <= 0) {
-            throw new Error(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
+            throw new BadRequestException(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
           }
 
-          // Determine returned quantity (preserve existing or use provided)
-          const existingItemData = existingItemsMap.get(orderItemDto.itemId);
-          const preservedReturnedQty = existingItemData?.returnedQty || 0;
-          const returnedQty = orderItemDto.returnedQuantity !== undefined 
-            ? orderItemDto.returnedQuantity 
-            : preservedReturnedQty;
-
-          // Validate returned quantity doesn't exceed issued quantity
+          const returnedQty = orderItemDto.returnedQuantity || 0;
           if (returnedQty > orderItemDto.quantity) {
-            throw new Error(`Returned quantity (${returnedQty}) cannot exceed issued quantity (${orderItemDto.quantity}) for item ${item.name || item.id}`);
-          }
-
-          // Check if we have enough for net issued quantity (quantity - returnedQuantity)
-          const netIssuedQty = orderItemDto.quantity - returnedQty;
-          if (item.quantity < netIssuedQty) {
-            throw new Error(
-              `Insufficient quantity for item ${item.name || item.id}. Available: ${item.quantity}, Net issued needed: ${netIssuedQty} (${orderItemDto.quantity} issued - ${returnedQty} returned)`
+            throw new BadRequestException(
+              `Returned quantity (${returnedQty}) cannot exceed issued quantity (${orderItemDto.quantity}) for item ${item.name || item.id}`,
             );
           }
 
-          return { item, orderItemDto };
-        })
-      );
+          const orderItem = await orderItemRepo.save(orderItemRepo.create({
+            order: existingOrder,
+            item,
+            quantity: orderItemDto.quantity,
+            returnedQuantity: 0,
+            amount: orderItemDto.amount,
+          }));
 
-      // Create new order items and update quantities
-      let totalAmount = 0;
+          await this.fifoService.consume(em, item, orderItemDto.quantity, { orderItem });
+          if (returnedQty > 0) {
+            await this.fifoService.restoreByOrderItem(em, orderItem.id, returnedQty);
+            orderItem.returnedQuantity = returnedQty;
+            await orderItemRepo.save(orderItem);
+          }
 
-      for (const { item, orderItemDto } of itemValidations) {
-        // Preserve returnedQuantity if this item existed before, otherwise use provided value or 0
-        const existingItemData = existingItemsMap.get(orderItemDto.itemId);
-        const preservedReturnedQty = existingItemData?.returnedQty || 0;
-        const returnedQty = orderItemDto.returnedQuantity !== undefined 
-          ? orderItemDto.returnedQuantity 
-          : preservedReturnedQty;
+          totalAmount += Number(orderItemDto.amount);
+        }
 
-        const orderItem = this.orderItemRepository.create({
-          order: existingOrder,
-          item: item,
-          quantity: orderItemDto.quantity,
-          returnedQuantity: returnedQty,
-          amount: orderItemDto.amount,
-        });
-
-        await this.orderItemRepository.save(orderItem);
-
-        // Subtract the new net issued quantity (quantity - returnedQuantity)
-        // Note: We already restored the old net issued quantity above, so we just subtract the new one
-        const newNetIssued = orderItemDto.quantity - returnedQty;
-        item.quantity = item.quantity - newNetIssued;
-        await this.itemRepository.save(item);
-
-        totalAmount += orderItemDto.amount;
+        existingOrder.totalAmount = parseFloat(totalAmount.toFixed(2));
+        await orderRepo.save(existingOrder);
       }
 
-      // Update order total
-      existingOrder.totalAmount = totalAmount;
-      await this.ordersRepository.save(existingOrder);
-    }
+      if (updateOrderDto.status !== undefined && updateOrderDto.status !== existingOrder.status) {
+        if (updateOrderDto.status === OrderStatus.COMPLETED) {
+          const latest = await orderRepo.findOne({
+            where: { id, is_archived: false },
+            relations: ['orderItems', 'orderItems.item', 'shop'],
+          });
+          if (latest) {
+            await this.createSaleFromOrder(latest, em);
+          }
+        }
+        existingOrder.status = updateOrderDto.status;
+        await orderRepo.save(existingOrder);
+      }
 
-    // Update status if provided
-    if (updateOrderDto.status !== undefined) {
-      existingOrder.status = updateOrderDto.status;
-      await this.ordersRepository.save(existingOrder);
-    }
-
-    return this.findOne(id);
+      return orderRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['orderItems', 'orderItems.item', 'shop'],
+      });
+    });
   }
 
   async returnItems(orderId: number, itemId: number, returnedQuantity: number): Promise<Order | null> {
-    const order = await this.ordersRepository.findOne({
-      where: { id: orderId, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
+    return this.dataSource.transaction(async (em) => {
+      const orderRepo = em.getRepository(Order);
+      const orderItemRepo = em.getRepository(OrderItem);
+
+      const order = await orderRepo.findOne({
+        where: { id: orderId, is_archived: false },
+        relations: ['orderItems', 'orderItems.item'],
+      });
+
+      if (!order) {
+        return null;
+      }
+      if (order.status === OrderStatus.COMPLETED) {
+        throw new BadRequestException('Cannot return items on a completed order');
+      }
+
+      const orderItem = order.orderItems.find(oi => oi.item.id === itemId);
+      if (!orderItem) {
+        throw new BadRequestException(`Item ${itemId} not found in order ${orderId}`);
+      }
+
+      const currentReturned = orderItem.returnedQuantity || 0;
+      const newReturnedQuantity = currentReturned + returnedQuantity;
+
+      if (returnedQuantity <= 0) {
+        throw new BadRequestException('Returned quantity must be greater than 0');
+      }
+      if (newReturnedQuantity > orderItem.quantity) {
+        throw new BadRequestException(
+          `Cannot return more than issued quantity. Issued: ${orderItem.quantity}, Already returned: ${currentReturned}, Trying to return: ${returnedQuantity}`,
+        );
+      }
+
+      await this.fifoService.restoreByOrderItem(em, orderItem.id, returnedQuantity);
+      orderItem.returnedQuantity = newReturnedQuantity;
+      await orderItemRepo.save(orderItem);
+
+      return orderRepo.findOne({
+        where: { id: orderId, is_archived: false },
+        relations: ['orderItems', 'orderItems.item', 'shop'],
+      });
     });
-
-    if (!order) {
-      return null;
-    }
-
-    const orderItem = order.orderItems.find(oi => oi.item.id === itemId);
-    if (!orderItem) {
-      throw new Error(`Item ${itemId} not found in order ${orderId}`);
-    }
-
-    const currentReturned = orderItem.returnedQuantity || 0;
-    const newReturnedQuantity = currentReturned + returnedQuantity;
-
-    if (newReturnedQuantity > orderItem.quantity) {
-      throw new Error(`Cannot return more than issued quantity. Issued: ${orderItem.quantity}, Already returned: ${currentReturned}, Trying to return: ${returnedQuantity}`);
-    }
-
-    // Update returned quantity
-    orderItem.returnedQuantity = newReturnedQuantity;
-    await this.orderItemRepository.save(orderItem);
-
-    // Add returned quantity back to item
-    const item = await this.itemRepository.findOne({
-      where: { id: itemId, is_archived: false },
-    });
-
-    if (item) {
-      item.quantity = item.quantity + returnedQuantity;
-      await this.itemRepository.save(item);
-    }
-
-    return this.findOne(orderId);
   }
 
-  async createSaleFromOrder(order: Order): Promise<Sale> {
-    if (!order.orderItems || order.orderItems.length === 0) {
-      throw new Error('Cannot create sale from order with no items');
-    }
+  async createSaleFromOrder(order: Order, manager?: EntityManager): Promise<Sale> {
+    const run = async (em: EntityManager) => {
+      const orderRepo = em.getRepository(Order);
+      const saleRepo = em.getRepository(Sale);
+      const saleItemRepo = em.getRepository(SaleItem);
+      const allocRepo = em.getRepository(StockAllocation);
 
-    // Reload order with item relations
-    const fullOrder = await this.ordersRepository.findOne({
-      where: { id: order.id, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
-    });
+      const fullOrder = await orderRepo.findOne({
+        where: { id: order.id, is_archived: false },
+        relations: ['orderItems', 'orderItems.item', 'shop'],
+      });
 
-    if (!fullOrder) {
-      throw new Error('Order not found');
-    }
+      if (!fullOrder) {
+        throw new BadRequestException('Order not found');
+      }
+      if (!fullOrder.orderItems || fullOrder.orderItems.length === 0) {
+        throw new BadRequestException('Cannot create sale from order with no items');
+      }
 
-    // Calculate sale items (only non-returned quantities)
-    interface SaleItemData {
-      itemId: number;
-      quantity: number;
-      amount: number;
-      profit: number;
-      item: Item;
-    }
-    const saleItems: SaleItemData[] = [];
-    let totalAmount = 0;
-    let totalProfit = 0;
+      const existingSale = await saleRepo.findOne({
+        where: { order: { id: fullOrder.id }, is_archived: false },
+      });
+      if (existingSale) {
+        throw new BadRequestException('A sale already exists for this order');
+      }
 
-    for (const orderItem of fullOrder.orderItems) {
-      const soldQuantity = orderItem.quantity - (orderItem.returnedQuantity || 0);
-      
-      if (soldQuantity > 0) {
-        const purchasePrice = typeof orderItem.item.purchasePrice === 'string' 
-          ? parseFloat(orderItem.item.purchasePrice) 
-          : (orderItem.item.purchasePrice || 0);
-        
-        // Calculate proportional amount based on sold quantity
-        const saleAmount = orderItem.amount * (soldQuantity / orderItem.quantity);
-        const saleProfit = saleAmount - (purchasePrice * soldQuantity);
+      let totalAmount = 0;
+      let totalProfit = 0;
+      const saleLines: { item: Item; quantity: number; amount: number; profit: number }[] = [];
 
-        saleItems.push({
-          itemId: orderItem.item.id,
-          quantity: soldQuantity,
-          amount: saleAmount,
-          profit: saleProfit,
-          item: orderItem.item,
+      for (const orderItem of fullOrder.orderItems) {
+        const soldQuantity = orderItem.quantity - (orderItem.returnedQuantity || 0);
+        if (soldQuantity <= 0) {
+          continue;
+        }
+
+        const allocations = await allocRepo.find({
+          where: { orderItem: { id: orderItem.id }, is_archived: false },
         });
+        let cogs = allocations.reduce(
+          (sum, allocation) => sum + allocation.quantity * Number(allocation.unitCost),
+          0,
+        );
+        if (allocations.length === 0) {
+          const purchasePrice = Number(orderItem.item.purchasePrice) || 0;
+          cogs = purchasePrice * soldQuantity;
+        }
+        const saleAmount = Number(orderItem.amount) * (soldQuantity / orderItem.quantity);
+        const saleProfit = parseFloat((saleAmount - cogs).toFixed(2));
 
+        saleLines.push({
+          item: orderItem.item,
+          quantity: soldQuantity,
+          amount: parseFloat(saleAmount.toFixed(2)),
+          profit: saleProfit,
+        });
         totalAmount += saleAmount;
         totalProfit += saleProfit;
       }
-    }
 
-    if (saleItems.length === 0) {
-      throw new Error('Cannot create sale: all items were returned');
-    }
+      if (saleLines.length === 0) {
+        throw new BadRequestException('Cannot create sale: all items were returned');
+      }
 
-    // Create sale
-    const sale = this.salesRepository.create({
-      totalAmount,
-      totalProfit,
-    });
+      const sale = await saleRepo.save(saleRepo.create({
+        totalAmount: parseFloat(totalAmount.toFixed(2)),
+        totalProfit: parseFloat(totalProfit.toFixed(2)),
+        shop: fullOrder.shop || null,
+        order: fullOrder,
+      }));
 
-    const savedSale = await this.salesRepository.save(sale);
+      for (const line of saleLines) {
+        await saleItemRepo.save(saleItemRepo.create({
+          sale,
+          item: line.item,
+          quantity: line.quantity,
+          amount: line.amount,
+          profit: line.profit,
+        }));
+      }
 
-    // Create sale items (DO NOT subtract quantities - items were already issued when order was created)
-    for (const saleItemData of saleItems) {
-      const saleItem = this.saleItemRepository.create({
-        sale: savedSale,
-        item: saleItemData.item,
-        quantity: saleItemData.quantity,
-        profit: saleItemData.profit,
-        amount: saleItemData.amount,
+      const result = await saleRepo.findOne({
+        where: { id: sale.id, is_archived: false },
+        relations: ['saleItems', 'saleItems.item', 'shop'],
       });
+      if (!result) {
+        throw new BadRequestException('Failed to reload sale after creation');
+      }
+      return result;
+    };
 
-      await this.saleItemRepository.save(saleItem);
+    if (manager) {
+      return run(manager);
     }
-
-    const result = await this.salesRepository.findOne({
-      where: { id: savedSale.id, is_archived: false },
-      relations: ['saleItems', 'saleItems.item'],
-    });
-    if (!result) {
-      throw new Error('Failed to reload sale after creation');
-    }
-    return result;
+    return this.dataSource.transaction(run);
   }
 
   async remove(id: number): Promise<boolean> {
-    const order = await this.ordersRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['orderItems', 'orderItems.item'],
-    });
+    return this.dataSource.transaction(async (em) => {
+      const orderRepo = em.getRepository(Order);
+      const saleRepo = em.getRepository(Sale);
 
-    if (!order) {
-      return false;
-    }
-
-    // Restore quantities for all items (subtract returned quantities as they were already returned)
-    for (const orderItem of order.orderItems) {
-      const item = await this.itemRepository.findOne({
-        where: { id: orderItem.item.id, is_archived: false },
+      const order = await orderRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['orderItems', 'orderItems.item'],
       });
-      if (item) {
-        // Restore only the net issued quantity (quantity - returnedQuantity)
-        const netIssuedQuantity = orderItem.quantity - (orderItem.returnedQuantity || 0);
-        item.quantity = item.quantity + netIssuedQuantity;
-        await this.itemRepository.save(item);
-      }
-    }
 
-    // Soft delete: mark as archived instead of deleting
-    order.is_archived = true;
-    await this.ordersRepository.save(order);
-    return true;
+      if (!order) {
+        return false;
+      }
+
+      const linkedSale = await saleRepo.findOne({
+        where: { order: { id: order.id }, is_archived: false },
+      });
+      if (linkedSale) {
+        linkedSale.is_archived = true;
+        await saleRepo.save(linkedSale);
+      }
+
+      for (const orderItem of order.orderItems) {
+        await this.fifoService.restoreByOrderItem(em, orderItem.id);
+      }
+
+      order.is_archived = true;
+      await orderRepo.save(order);
+      return true;
+    });
   }
 }

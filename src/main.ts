@@ -2,15 +2,21 @@ import { config } from 'dotenv';
 config();
 
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { seedUsers } from './users/seed/users.seed';
+import { backfillStockLots } from './stock-lots/backfill-lots';
 
 async function bootstrap() {
   console.log('🚀 Starting server...');
   
   const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true,
+    transformOptions: { enableImplicitConversion: true },
+  }));
   
   // Check database connection
   try {
@@ -29,9 +35,9 @@ async function bootstrap() {
   const allowedOrigins = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',') 
     : [
+        'http://localhost:3000',
         'http://localhost:3001',
         'https://ims-client-eight.vercel.app',
-        'https://ims-client-eight.vercel.app' // Remove trailing slash version
       ];
 
   console.log('🌐 Allowed Origins:', allowedOrigins);
@@ -83,6 +89,8 @@ async function bootstrap() {
     console.log('🌱 Seeding users...');
     await seedUsers(dataSource);
     console.log('✅ Users seeded successfully');
+    await backfillStockLots(dataSource);
+    console.log('✅ FIFO stock lots ready');
   } catch (error) {
     console.error('❌ Error seeding users:', error);
   }

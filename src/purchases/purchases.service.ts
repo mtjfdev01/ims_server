@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { UpdatePurchaseDto } from './dto/update-purchase.dto';
 import { Purchase } from './entities/purchase.entity';
@@ -8,6 +8,7 @@ import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
+import { FifoService } from '../stock-lots/fifo.service';
 
 @Injectable()
 export class PurchasesService {
@@ -18,50 +19,83 @@ export class PurchasesService {
     private itemRepository: Repository<Item>,
     @InjectRepository(Shop)
     private shopRepository: Repository<Shop>,
+    private fifoService: FifoService,
+    private dataSource: DataSource,
   ) {}
 
-  async create(createPurchaseDto: CreatePurchaseDto): Promise<Purchase> {
-    const item = await this.itemRepository.findOne({
-      where: { id: createPurchaseDto.itemId, is_archived: false },
-    });
+  async create(createPurchaseDto: CreatePurchaseDto, manager?: EntityManager): Promise<Purchase> {
+    const run = async (em: EntityManager) => {
+      const itemRepo = em.getRepository(Item);
+      const shopRepo = em.getRepository(Shop);
+      const purchaseRepo = em.getRepository(Purchase);
 
-    if (!item) {
-      throw new Error(`Item with ID ${createPurchaseDto.itemId} not found`);
-    }
-
-    const purchase = this.purchasesRepository.create({
-      item: item,
-      purchasePrice: createPurchaseDto.purchasePrice,
-      quantity: createPurchaseDto.quantity || 1,
-      purchaseDate: createPurchaseDto.purchaseDate ? new Date(createPurchaseDto.purchaseDate) : new Date(),
-    });
-
-    // Set shop if provided
-    if (createPurchaseDto.shopId) {
-      const shop = await this.shopRepository.findOne({
-        where: { id: createPurchaseDto.shopId },
+      const item = await itemRepo.findOne({
+        where: { id: createPurchaseDto.itemId, is_archived: false },
+        relations: ['shop'],
       });
-      if (shop) {
-        purchase.shop = shop;
-      }
-    }
 
-    return this.purchasesRepository.save(purchase);
+      if (!item) {
+        throw new BadRequestException(`Item with ID ${createPurchaseDto.itemId} not found`);
+      }
+
+      const quantity = createPurchaseDto.quantity || 1;
+      if (quantity <= 0) {
+        throw new BadRequestException('Purchase quantity must be greater than 0');
+      }
+
+      const purchase = purchaseRepo.create({
+        item,
+        purchasePrice: createPurchaseDto.purchasePrice,
+        quantity,
+        purchaseDate: createPurchaseDto.purchaseDate
+          ? new Date(createPurchaseDto.purchaseDate)
+          : new Date(),
+      });
+
+      const shopId = createPurchaseDto.shopId || item.shop?.id;
+      if (shopId) {
+        const shop = await shopRepo.findOne({ where: { id: shopId } });
+        if (shop) {
+          purchase.shop = shop;
+        }
+      }
+
+      const savedPurchase = await purchaseRepo.save(purchase);
+      await this.fifoService.addStock(
+        em,
+        item,
+        quantity,
+        Number(createPurchaseDto.purchasePrice) || 0,
+        savedPurchase.purchaseDate,
+        savedPurchase,
+      );
+
+      const result = await purchaseRepo.findOne({
+        where: { id: savedPurchase.id },
+        relations: ['item', 'shop'],
+      });
+      if (!result) {
+        throw new BadRequestException('Failed to reload purchase after creation');
+      }
+      return result;
+    };
+
+    if (manager) {
+      return run(manager);
+    }
+    return this.dataSource.transaction(run);
   }
 
   async findAll(filterDto?: FilterDto & { itemId?: number; shopId?: number }) {
     const baseWhere: any = { is_archived: false };
 
-    // Filter by shop if provided
     if (filterDto?.shopId) {
       baseWhere.shop = { id: filterDto.shopId };
     }
 
-    // Filter by item if provided
     if (filterDto?.itemId) {
       baseWhere.item = { id: filterDto.itemId };
     } else if (filterDto?.search) {
-      // Fallback to search for item ID
       const itemId = parseInt(filterDto.search);
       if (!isNaN(itemId)) {
         baseWhere.item = { id: itemId };
@@ -91,82 +125,75 @@ export class PurchasesService {
   }
 
   async update(id: number, updatePurchaseDto: UpdatePurchaseDto): Promise<Purchase | null> {
-    const purchase = await this.purchasesRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['item'],
-    });
-
-    if (!purchase) {
-      return null;
-    }
-
-    if (updatePurchaseDto.itemId !== undefined) {
-      const item = await this.itemRepository.findOne({
-        where: { id: updatePurchaseDto.itemId, is_archived: false },
+    return this.dataSource.transaction(async (em) => {
+      const purchaseRepo = em.getRepository(Purchase);
+      const purchase = await purchaseRepo.findOne({
+        where: { id, is_archived: false },
+        relations: ['item'],
       });
-      if (!item) {
-        throw new Error(`Item with ID ${updatePurchaseDto.itemId} not found`);
+
+      if (!purchase) {
+        return null;
       }
-      purchase.item = item;
-    }
 
-    if (updatePurchaseDto.purchasePrice !== undefined) {
-      purchase.purchasePrice = updatePurchaseDto.purchasePrice;
-    }
+      if (updatePurchaseDto.itemId !== undefined && updatePurchaseDto.itemId !== purchase.item.id) {
+        throw new BadRequestException('Cannot change the item on an existing purchase. Delete it and create a new one.');
+      }
 
-    if (updatePurchaseDto.quantity !== undefined) {
-      purchase.quantity = updatePurchaseDto.quantity;
-    }
+      if (updatePurchaseDto.purchasePrice !== undefined) {
+        purchase.purchasePrice = updatePurchaseDto.purchasePrice;
+        await this.fifoService.adjustPurchaseCost(em, purchase.id, Number(updatePurchaseDto.purchasePrice) || 0);
+      }
 
-    if (updatePurchaseDto.purchaseDate !== undefined) {
-      purchase.purchaseDate = new Date(updatePurchaseDto.purchaseDate);
-    }
+      if (updatePurchaseDto.quantity !== undefined) {
+        purchase.quantity = updatePurchaseDto.quantity;
+        await this.fifoService.adjustPurchaseQuantity(em, purchase.id, updatePurchaseDto.quantity);
+      }
 
-    return this.purchasesRepository.save(purchase);
+      if (updatePurchaseDto.purchaseDate !== undefined) {
+        purchase.purchaseDate = new Date(updatePurchaseDto.purchaseDate);
+      }
+
+      return purchaseRepo.save(purchase);
+    });
   }
 
   async remove(id: number): Promise<boolean> {
-    const purchase = await this.purchasesRepository.findOne({
-      where: { id, is_archived: false },
+    return this.dataSource.transaction(async (em) => {
+      const purchaseRepo = em.getRepository(Purchase);
+      const purchase = await purchaseRepo.findOne({
+        where: { id, is_archived: false },
+      });
+
+      if (!purchase) {
+        return false;
+      }
+
+      await this.fifoService.removePurchaseStock(em, purchase.id);
+      purchase.is_archived = true;
+      await purchaseRepo.save(purchase);
+      return true;
     });
-
-    if (!purchase) {
-      return false;
-    }
-
-    // Soft delete: mark as archived instead of deleting
-    purchase.is_archived = true;
-    await this.purchasesRepository.save(purchase);
-    return true;
   }
 
-  async getTotal(filterDto?: FilterDto & { itemId?: number }): Promise<number> {
-    let queryBuilder = this.purchasesRepository.createQueryBuilder('purchase');
-    let hasWhere = false;
+  async getTotal(filterDto?: FilterDto & { itemId?: number; shopId?: number }): Promise<number> {
+    let queryBuilder = this.purchasesRepository.createQueryBuilder('purchase')
+      .where('purchase.is_archived = :archived', { archived: false });
 
-    // Filter by item if provided
-    if (filterDto?.itemId) {
-      queryBuilder.where('purchase.item_id = :itemId', { itemId: filterDto.itemId });
-      hasWhere = true;
+    if (filterDto?.shopId) {
+      queryBuilder.andWhere('purchase.shop_id = :shopId', { shopId: filterDto.shopId });
     }
 
-    // Apply date filters
+    if (filterDto?.itemId) {
+      queryBuilder.andWhere('purchase.item_id = :itemId', { itemId: filterDto.itemId });
+    }
+
     if (filterDto?.date) {
       const date = new Date(filterDto.date);
-      if (hasWhere) {
-        queryBuilder.andWhere('DATE(purchase.purchaseDate) = DATE(:date)', { date });
-      } else {
-        queryBuilder.where('DATE(purchase.purchaseDate) = DATE(:date)', { date });
-        hasWhere = true;
-      }
+      queryBuilder.andWhere('DATE(purchase.purchaseDate) = DATE(:date)', { date });
     } else {
       if (filterDto?.dateFrom) {
-        if (hasWhere) {
-          queryBuilder.andWhere('DATE(purchase.purchaseDate) >= DATE(:dateFrom)', { dateFrom: filterDto.dateFrom });
-        } else {
-          queryBuilder.where('DATE(purchase.purchaseDate) >= DATE(:dateFrom)', { dateFrom: filterDto.dateFrom });
-          hasWhere = true;
-        }
+        queryBuilder.andWhere('DATE(purchase.purchaseDate) >= DATE(:dateFrom)', { dateFrom: filterDto.dateFrom });
       }
       if (filterDto?.dateTo) {
         queryBuilder.andWhere('DATE(purchase.purchaseDate) <= DATE(:dateTo)', { dateTo: filterDto.dateTo });

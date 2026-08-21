@@ -26,10 +26,13 @@ export class PurchasesController {
   }
 
   @Get('totals')
-  async getTotal(@Query() filterDto: FilterDto & { itemId?: string }) {
+  async getTotal(@Query() filterDto: FilterDto & { itemId?: string; shopId?: string }) {
     const filters: any = { ...filterDto };
     if (filterDto.itemId) {
       filters.itemId = parseInt(filterDto.itemId);
+    }
+    if (filterDto.shopId) {
+      filters.shopId = parseInt(filterDto.shopId);
     }
     const total = await this.purchasesService.getTotal(filters);
     return { total };

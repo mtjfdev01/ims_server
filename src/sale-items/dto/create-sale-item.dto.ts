@@ -11,9 +11,10 @@ export class CreateSaleItemDto {
   @Type(() => Number)
   quantity: number;
 
+  @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  profit: number;
+  profit?: number;
 
   @IsNumber()
   @Min(0)
