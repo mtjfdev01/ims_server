@@ -2,6 +2,7 @@ import { Entity, Column, PrimaryGeneratedColumn, ManyToMany, JoinTable, OneToMan
 import { Category } from '../../category/entities/category.entity';
 import { Item } from '../../items/entities/item.entity';
 import { User } from '../../users/entities/user.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
 
 @Entity('companies')
 export class Company {
@@ -21,6 +22,10 @@ export class Company {
 
   @OneToMany(() => Item, item => item.company)
   items: Item[];
+
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })

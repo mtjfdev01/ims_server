@@ -1,10 +1,11 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, ManyToMany, JoinTable, OneToMany } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, ManyToMany, JoinTable, OneToMany, CreateDateColumn } from 'typeorm';
 import { Company } from '../../companies/entities/company.entity';
 import { Category } from '../../category/entities/category.entity';
 import { Store } from '../../stores/entities/store.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
 import { StockLot } from '../../stock-lots/entities/stock-lot.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
 
 @Entity('items')
 export class Item {
@@ -34,8 +35,8 @@ export class Item {
   @JoinColumn({ name: 'shop_id' })
   shop: Shop | null;
 
-  @Column()
-  location: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  location: string | null;
 
   @Column('int', { default: 1 })
   quantity: number;
@@ -46,6 +47,10 @@ export class Item {
   @Column('decimal', { precision: 10, scale: 2 })
   minimumSalePrice: number;
 
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
+
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })
   createdBy: User | null;
@@ -55,4 +60,7 @@ export class Item {
 
   @Column({ default: false })
   is_archived: boolean;
+
+  @CreateDateColumn()
+  createdAt: Date;
 }

@@ -1,12 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
+import { assertShopAccess, requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
+import { UserRole } from '../common/request-context';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { Shop } from './entities/shop.entity';
 import { Item } from '../items/entities/item.entity';
 import { Store } from '../stores/entities/store.entity';
 import { User } from '../users/entities/user.entity';
+import { UsersService } from '../users/users.service';
 import { FifoService } from '../stock-lots/fifo.service';
 import { PaginationDto, PaginationResult } from '../common/pagination.dto';
 import { paginate } from '../common/pagination.util';
@@ -23,88 +26,80 @@ export class ShopsService {
     @InjectRepository(User)
     private userRepository: Repository<User>,
     private fifoService: FifoService,
+    private usersService: UsersService,
   ) {}
 
-  async create(createShopDto: CreateShopDto, userId?: number): Promise<Shop> {
+  async create(createShopDto: CreateShopDto): Promise<Shop> {
+    const authUser = requireUser();
+    const tenantId = await this.usersService.resolveCreateTenantId(
+      createShopDto.tenantId,
+      createShopDto.tenantName,
+    );
     const shop = this.shopsRepository.create({
       name: createShopDto.name,
       branch: createShopDto.branch,
       dealer: createShopDto.dealer,
       location: createShopDto.location,
     });
+    stampOwnership(shop, tenantId);
 
     if (createShopDto.storeIds && createShopDto.storeIds.length > 0) {
-      const stores = await this.storeRepository.findBy({
-        id: In(createShopDto.storeIds),
+      const stores = await this.storeRepository.find({
+        where: tenantWhere({ id: In(createShopDto.storeIds) }),
       });
       shop.stores = stores;
     }
 
-    // Assign shop to user if userId is provided
-    if (userId) {
-      const user = await this.userRepository.findOne({ where: { id: userId } });
-      if (user) {
-        shop.users = [user];
-        shop.createdBy = user;
-      }
+    const saved = await this.shopsRepository.save(shop);
+    const user = await this.userRepository.findOne({ where: { id: authUser.id }, relations: ['shops'] });
+    if (user && authUser.role === UserRole.USER) {
+      user.shops = [...(user.shops || []).filter(existing => existing.id !== saved.id), saved];
+      await this.userRepository.save(user);
     }
-
-    return this.shopsRepository.save(shop);
+    return this.shopsRepository.findOne({
+      where: { id: saved.id },
+      relations: ['stores', 'tenant'],
+    }) as Promise<Shop>;
   }
 
-  async findAll(paginationDto?: PaginationDto, userId?: number): Promise<Shop[] | PaginationResult<Shop>> {
-    if (userId) {
-      // Filter shops by user
-      const queryBuilder = this.shopsRepository.createQueryBuilder('shop')
-        .leftJoinAndSelect('shop.stores', 'stores')
-        .leftJoin('shop.users', 'user')
-        .where('user.id = :userId', { userId })
-        .andWhere('shop.is_archived = :archived', { archived: false });
+  async findAll(paginationDto?: PaginationDto): Promise<Shop[] | PaginationResult<Shop>> {
+    const user = requireUser();
+    const queryBuilder = this.shopsRepository.createQueryBuilder('shop')
+      .leftJoinAndSelect('shop.stores', 'stores')
+      .where('shop.is_archived = :archived', { archived: false });
 
-      if (paginationDto && (paginationDto.page || paginationDto.limit)) {
-        const page = paginationDto.page || 1;
-        const limit = paginationDto.limit || 10;
-        const skip = (page - 1) * limit;
-
-        const [data, total] = await queryBuilder
-          .skip(skip)
-          .take(limit)
-          .getManyAndCount();
-
-        return {
-          data,
-          total,
-          page,
-          limit,
-          totalPages: Math.ceil(total / limit),
-        };
-      }
-
-      return queryBuilder.getMany();
+    const scoped = tenantWhere();
+    if (scoped.tenant) {
+      queryBuilder.andWhere('shop.tenant_id = :tenantId', { tenantId: scoped.tenant.id });
+    }
+    if (!skipsShopFilter(user)) {
+      const ids = user.shopIds.length ? user.shopIds : [-1];
+      queryBuilder.andWhere('shop.id IN (:...ids)', { ids });
     }
 
-    // If no userId, return all shops (for admin or when no user context)
     if (paginationDto && (paginationDto.page || paginationDto.limit)) {
-      const baseWhere = { is_archived: false };
-      return paginate(this.shopsRepository, paginationDto || { page: 1, limit: 10 }, baseWhere, ['stores']);
+      const page = paginationDto.page || 1;
+      const limit = paginationDto.limit || 10;
+      const skip = (page - 1) * limit;
+      const [data, total] = await queryBuilder.skip(skip).take(limit).getManyAndCount();
+      return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
     }
-    const shops = await this.shopsRepository.find({ 
-      where: { is_archived: false },
-      relations: ['stores'] 
-    });
-    return shops;
+    return queryBuilder.getMany();
   }
 
-  findOne(id: number, userId?: number): Promise<Shop | null> {
+  async findOne(id: number): Promise<Shop | null> {
     const queryBuilder = this.shopsRepository.createQueryBuilder('shop')
       .leftJoinAndSelect('shop.stores', 'stores')
       .where('shop.id = :id', { id })
       .andWhere('shop.is_archived = :archived', { archived: false });
 
-    if (userId) {
-      queryBuilder
-        .leftJoin('shop.users', 'user')
-        .andWhere('user.id = :userId', { userId });
+    const scoped = tenantWhere();
+    if (scoped.tenant) {
+      queryBuilder.andWhere('shop.tenant_id = :tenantId', { tenantId: scoped.tenant.id });
+    }
+    const user = requireUser();
+    if (user.role !== UserRole.SUPER_ADMIN) {
+      assertShopAccess(id);
     }
 
     return queryBuilder.getOne();
@@ -112,9 +107,12 @@ export class ShopsService {
 
   async update(id: number, updateShopDto: UpdateShopDto): Promise<Shop | null> {
     const shop = await this.shopsRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['stores'],
     });
+    if (shop) {
+      assertShopAccess(id);
+    }
 
     if (!shop) {
       return null;
@@ -127,8 +125,8 @@ export class ShopsService {
 
     if (updateShopDto.storeIds !== undefined) {
       if (updateShopDto.storeIds.length > 0) {
-        const stores = await this.storeRepository.findBy({
-          id: In(updateShopDto.storeIds),
+        const stores = await this.storeRepository.find({
+          where: tenantWhere({ id: In(updateShopDto.storeIds) }),
         });
         shop.stores = stores;
       } else {
@@ -140,8 +138,9 @@ export class ShopsService {
   }
 
   async remove(id: number): Promise<boolean> {
+    requireSuperAdmin();
     const shop = await this.shopsRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
     });
 
     if (!shop) {
@@ -155,37 +154,32 @@ export class ShopsService {
   }
 
   async removeAll(): Promise<number> {
-    // Soft delete: mark all shops as archived
-    const result = await this.shopsRepository.update({ is_archived: false }, { is_archived: true });
+    requireSuperAdmin();
+    requireTenantId();
+    const result = await this.shopsRepository.update(tenantWhere({ is_archived: false }), { is_archived: true });
     return result.affected || 0;
   }
 
-  async getItems(shopId: number, userId?: number): Promise<Item[]> {
-    // First verify user has access to this shop
-    if (userId) {
-      const shop = await this.findOne(shopId, userId);
-      if (!shop) {
-        throw new Error('Shop not found or access denied');
-      }
+  async getItems(shopId: number): Promise<Item[]> {
+    const shop = await this.findOne(shopId);
+    if (!shop) {
+      throw new NotFoundException('Shop not found or access denied');
     }
 
     return this.itemRepository.find({
-      where: { shop: { id: shopId }, is_archived: false },
+      where: tenantWhere({ shop: { id: shopId }, is_archived: false }),
       relations: ['company', 'categories', 'store', 'shop'],
     });
   }
 
-  async getAssetValue(shopId: number, userId?: number): Promise<number> {
-    // First verify user has access to this shop
-    if (userId) {
-      const shop = await this.findOne(shopId, userId);
-      if (!shop) {
-        throw new Error('Shop not found or access denied');
-      }
+  async getAssetValue(shopId: number): Promise<number> {
+    const shop = await this.findOne(shopId);
+    if (!shop) {
+      throw new NotFoundException('Shop not found or access denied');
     }
 
     const items = await this.itemRepository.find({
-      where: { shop: { id: shopId }, is_archived: false },
+      where: tenantWhere({ shop: { id: shopId }, is_archived: false }),
       select: ['id'],
     });
 

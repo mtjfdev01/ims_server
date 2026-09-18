@@ -7,9 +7,10 @@ import { Item } from '../items/entities/item.entity';
 import { Store } from '../stores/entities/store.entity';
 import { User } from '../users/entities/user.entity';
 import { StockLotsModule } from '../stock-lots/stock-lots.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Shop, Item, Store, User]), StockLotsModule],
+  imports: [TypeOrmModule.forFeature([Shop, Item, Store, User]), StockLotsModule, UsersModule],
   controllers: [ShopsController],
   providers: [ShopsService],
 })

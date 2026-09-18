@@ -2,27 +2,29 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestj
 import { ExpenseService } from './expense.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
+import { FilterDto } from '../common/filter.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Permission } from '../rbac/permissions';
 
 @Controller('expense')
+@RequirePermissions(Permission.EXPENSES_READ)
 export class ExpenseController {
   constructor(private readonly expenseService: ExpenseService) {}
 
   @Post()
+  @RequirePermissions(Permission.EXPENSES_WRITE)
   async create(@Body() createExpenseDto: CreateExpenseDto) {
     return this.expenseService.create(createExpenseDto);
   }
 
   @Get()
-  async findAll(@Query('shopId') shopId?: string) {
-    if (shopId) {
-      return this.expenseService.findByShop(+shopId);
-    }
-    return this.expenseService.findAll();
+  async findAll(@Query() filterDto: FilterDto, @Query('shopId') shopId?: string) {
+    return this.expenseService.findAll(filterDto, shopId ? +shopId : undefined);
   }
 
   @Get('totals')
-  async getTotal(@Query('shopId') shopId?: string) {
-    const total = await this.expenseService.getTotal(shopId ? +shopId : undefined);
+  async getTotal(@Query() filterDto: FilterDto, @Query('shopId') shopId?: string) {
+    const total = await this.expenseService.getTotal(filterDto, shopId ? +shopId : undefined);
     return { total };
   }
 
@@ -36,6 +38,7 @@ export class ExpenseController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.EXPENSES_WRITE)
   async update(@Param('id') id: string, @Body() updateExpenseDto: UpdateExpenseDto) {
     const expense = await this.expenseService.update(+id, updateExpenseDto);
     if (!expense) {
@@ -45,6 +48,7 @@ export class ExpenseController {
   }
 
   @Delete(':id')
+  @RequirePermissions(Permission.EXPENSES_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.expenseService.remove(+id);
     if (!result) {

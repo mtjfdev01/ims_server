@@ -3,6 +3,7 @@ import { Item } from '../../items/entities/item.entity';
 import { Store } from '../../stores/entities/store.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
 
 @Entity('issues')
 export class Issue {
@@ -37,6 +38,10 @@ export class Issue {
 
   @Column({ nullable: true })
   notes: string;
+
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })

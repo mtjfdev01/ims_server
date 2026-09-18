@@ -13,6 +13,7 @@ import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
 import { FifoService } from '../stock-lots/fifo.service';
 import { StockAllocation } from '../stock-lots/entities/stock-allocation.entity';
+import { assertItemBelongsToShop, assertShopAccess, canAccessShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class OrdersService {
@@ -37,6 +38,10 @@ export class OrdersService {
     if (!createOrderDto.items || createOrderDto.items.length === 0) {
       throw new BadRequestException('Order must have at least one item');
     }
+    const shopId = createOrderDto.shopId;
+    if (!shopId) {
+      throw new BadRequestException('Shop is required');
+    }
 
     return this.dataSource.transaction(async (em) => {
       const itemRepo = em.getRepository(Item);
@@ -48,14 +53,14 @@ export class OrdersService {
         status: createOrderDto.status || OrderStatus.PENDING,
         totalAmount: 0,
       });
+      stampOwnership(order);
 
-      if (createOrderDto.shopId) {
-        const shop = await shopRepo.findOne({
-          where: { id: createOrderDto.shopId },
-        });
-        if (shop) {
-          order.shop = shop;
-        }
+      assertShopAccess(shopId);
+      const shop = await shopRepo.findOne({
+        where: tenantWhere({ id: shopId }),
+      });
+      if (shop) {
+        order.shop = shop;
       }
 
       const savedOrder = await orderRepo.save(order);
@@ -63,11 +68,13 @@ export class OrdersService {
 
       for (const orderItemDto of createOrderDto.items) {
         const item = await itemRepo.findOne({
-          where: { id: orderItemDto.itemId, is_archived: false },
+          where: tenantWhere({ id: orderItemDto.itemId, is_archived: false }),
+          relations: ['shop'],
         });
         if (!item) {
           throw new BadRequestException(`Item with ID ${orderItemDto.itemId} not found`);
         }
+        assertItemBelongsToShop(item, shopId);
         if (orderItemDto.quantity <= 0) {
           throw new BadRequestException(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
         }
@@ -99,30 +106,31 @@ export class OrdersService {
   }
 
   async findAll(filterDto?: FilterDto, shopId?: number) {
-    const baseWhere: any = { is_archived: false };
-    if (shopId) {
-      baseWhere.shop = { id: shopId };
-    }
+    const baseWhere: any = { ...tenantWhere({ is_archived: false }), ...shopScopeWhere(shopId) };
     if (filterDto && (filterDto.page || filterDto.limit || filterDto.date || filterDto.dateFrom || filterDto.dateTo)) {
       return paginateWithFilters(
         this.ordersRepository,
         filterDto,
         baseWhere,
-        ['orderItems', 'orderItems.item'],
+        ['orderItems', 'orderItems.item', 'shop'],
         { dateField: 'createdAt' }
       );
     }
     return this.ordersRepository.find({
       where: baseWhere,
-      relations: ['orderItems', 'orderItems.item'],
+      relations: ['orderItems', 'orderItems.item', 'shop'],
     });
   }
 
-  findOne(id: number): Promise<Order | null> {
-    return this.ordersRepository.findOne({
-      where: { id, is_archived: false },
+  async findOne(id: number): Promise<Order | null> {
+    const order = await this.ordersRepository.findOne({
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['orderItems', 'orderItems.item', 'shop'],
     });
+    if (!order || !canAccessShopRecord(order.shop?.id)) {
+      return null;
+    }
+    return order;
   }
 
   async update(id: number, updateOrderDto: UpdateOrderDto): Promise<Order | null> {
@@ -132,11 +140,11 @@ export class OrdersService {
       const itemRepo = em.getRepository(Item);
 
       const existingOrder = await orderRepo.findOne({
-        where: { id, is_archived: false },
+        where: tenantWhere({ id, is_archived: false }),
         relations: ['orderItems', 'orderItems.item', 'shop'],
       });
 
-      if (!existingOrder) {
+      if (!existingOrder || !canAccessShopRecord(existingOrder.shop?.id)) {
         return null;
       }
 
@@ -156,10 +164,14 @@ export class OrdersService {
         let totalAmount = 0;
         for (const orderItemDto of updateOrderDto.items) {
           const item = await itemRepo.findOne({
-            where: { id: orderItemDto.itemId, is_archived: false },
+            where: tenantWhere({ id: orderItemDto.itemId, is_archived: false }),
+            relations: ['shop'],
           });
           if (!item) {
             throw new BadRequestException(`Item with ID ${orderItemDto.itemId} not found`);
+          }
+          if (existingOrder.shop?.id) {
+            assertItemBelongsToShop(item, existingOrder.shop.id);
           }
           if (orderItemDto.quantity <= 0) {
             throw new BadRequestException(`Order quantity must be greater than 0 for item ${item.name || item.id}`);
@@ -221,11 +233,11 @@ export class OrdersService {
       const orderItemRepo = em.getRepository(OrderItem);
 
       const order = await orderRepo.findOne({
-        where: { id: orderId, is_archived: false },
-        relations: ['orderItems', 'orderItems.item'],
+        where: tenantWhere({ id: orderId, is_archived: false }),
+        relations: ['orderItems', 'orderItems.item', 'shop'],
       });
 
-      if (!order) {
+      if (!order || !canAccessShopRecord(order.shop?.id)) {
         return null;
       }
       if (order.status === OrderStatus.COMPLETED) {
@@ -324,12 +336,14 @@ export class OrdersService {
         throw new BadRequestException('Cannot create sale: all items were returned');
       }
 
-      const sale = await saleRepo.save(saleRepo.create({
+      const sale = saleRepo.create({
         totalAmount: parseFloat(totalAmount.toFixed(2)),
         totalProfit: parseFloat(totalProfit.toFixed(2)),
         shop: fullOrder.shop || null,
         order: fullOrder,
-      }));
+      });
+      stampOwnership(sale);
+      await saleRepo.save(sale);
 
       for (const line of saleLines) {
         await saleItemRepo.save(saleItemRepo.create({
@@ -363,11 +377,11 @@ export class OrdersService {
       const saleRepo = em.getRepository(Sale);
 
       const order = await orderRepo.findOne({
-        where: { id, is_archived: false },
-        relations: ['orderItems', 'orderItems.item'],
+        where: tenantWhere({ id, is_archived: false }),
+        relations: ['orderItems', 'orderItems.item', 'shop'],
       });
 
-      if (!order) {
+      if (!order || !canAccessShopRecord(order.shop?.id)) {
         return false;
       }
 

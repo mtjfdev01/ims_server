@@ -4,7 +4,7 @@ export class CreateItemDto {
   categories: number[];
   storeId?: number;
   shopId?: number;
-  location: string;
+  location?: string;
   quantity: number;
   purchasePrice: number;
   minimumSalePrice: number;

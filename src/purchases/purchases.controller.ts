@@ -3,12 +3,16 @@ import { PurchasesService } from './purchases.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { UpdatePurchaseDto } from './dto/update-purchase.dto';
 import { FilterDto } from '../common/filter.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Permission } from '../rbac/permissions';
 
 @Controller('purchases')
+@RequirePermissions(Permission.PURCHASES_READ)
 export class PurchasesController {
   constructor(private readonly purchasesService: PurchasesService) {}
 
   @Post()
+  @RequirePermissions(Permission.PURCHASES_WRITE)
   async create(@Body() createPurchaseDto: CreatePurchaseDto) {
     return this.purchasesService.create(createPurchaseDto);
   }
@@ -48,6 +52,7 @@ export class PurchasesController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.PURCHASES_WRITE)
   async update(@Param('id') id: string, @Body() updatePurchaseDto: UpdatePurchaseDto) {
     const purchase = await this.purchasesService.update(+id, updatePurchaseDto);
     if (!purchase) {
@@ -57,6 +62,7 @@ export class PurchasesController {
   }
 
   @Delete(':id')
+  @RequirePermissions(Permission.PURCHASES_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.purchasesService.remove(+id);
     if (!result) {

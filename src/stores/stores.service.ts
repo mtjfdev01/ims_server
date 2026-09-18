@@ -7,6 +7,8 @@ import { Store } from './entities/store.entity';
 import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FifoService } from '../stock-lots/fifo.service';
+import { requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
+import { PaginationDto, PaginationResult } from '../common/pagination.dto';
 
 @Injectable()
 export class StoresService {
@@ -25,10 +27,11 @@ export class StoresService {
       name: createStoreDto.name,
       location: createStoreDto.location,
     });
+    stampOwnership(store);
 
     if (createStoreDto.shopIds && createStoreDto.shopIds.length > 0) {
-      const shops = await this.shopRepository.findBy({
-        id: In(createStoreDto.shopIds),
+      const shops = await this.shopRepository.find({
+        where: tenantWhere({ id: In(createStoreDto.shopIds) }),
       });
       store.shops = shops;
     }
@@ -36,23 +39,52 @@ export class StoresService {
     return this.storesRepository.save(store);
   }
 
-  findAll(): Promise<Store[]> {
-    return this.storesRepository.find({ 
-      where: { is_archived: false },
-      relations: ['shops'] 
-    });
+  async findAll(paginationDto?: PaginationDto): Promise<Store[] | PaginationResult<Store>> {
+    const queryBuilder = this.storesRepository.createQueryBuilder('store')
+      .leftJoinAndSelect('store.shops', 'shops')
+      .where('store.is_archived = :archived', { archived: false });
+
+    const scoped = tenantWhere();
+    if (scoped.tenant) {
+      queryBuilder.andWhere('store.tenant_id = :tenantId', { tenantId: scoped.tenant.id });
+    }
+
+    if (!skipsShopFilter(requireUser())) {
+      const ids = requireUser().shopIds.length ? requireUser().shopIds : [-1];
+      queryBuilder.andWhere('shops.id IN (:...shopIds)', { shopIds: ids });
+      queryBuilder.distinct(true);
+    }
+
+    if (paginationDto && (paginationDto.page || paginationDto.limit)) {
+      const page = paginationDto.page || 1;
+      const limit = paginationDto.limit || 10;
+      const skip = (page - 1) * limit;
+      const [data, total] = await queryBuilder.skip(skip).take(limit).getManyAndCount();
+      return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    }
+
+    return queryBuilder.getMany();
   }
 
-  findOne(id: number): Promise<Store | null> {
-    return this.storesRepository.findOne({ 
-      where: { id, is_archived: false },
+  async findOne(id: number): Promise<Store | null> {
+    const store = await this.storesRepository.findOne({ 
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['shops']
     });
+    if (!store) {
+      return null;
+    }
+    const user = requireUser();
+    if (skipsShopFilter(user)) {
+      return store;
+    }
+    const allowed = (store.shops || []).some(shop => user.shopIds.includes(Number(shop.id)));
+    return allowed ? store : null;
   }
 
   async update(id: number, updateStoreDto: UpdateStoreDto): Promise<Store | null> {
     const store = await this.storesRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['shops'],
     });
 
@@ -65,8 +97,8 @@ export class StoresService {
 
     if (updateStoreDto.shopIds !== undefined) {
       if (updateStoreDto.shopIds.length > 0) {
-        const shops = await this.shopRepository.findBy({
-          id: In(updateStoreDto.shopIds),
+        const shops = await this.shopRepository.find({
+          where: tenantWhere({ id: In(updateStoreDto.shopIds) }),
         });
         store.shops = shops;
       } else {
@@ -78,8 +110,9 @@ export class StoresService {
   }
 
   async remove(id: number): Promise<boolean> {
+    requireSuperAdmin();
     const store = await this.storesRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
     });
 
     if (!store) {
@@ -93,21 +126,30 @@ export class StoresService {
   }
 
   async removeAll(): Promise<number> {
-    // Soft delete: mark all stores as archived
-    const result = await this.storesRepository.update({ is_archived: false }, { is_archived: true });
+    requireSuperAdmin();
+    requireTenantId();
+    const result = await this.storesRepository.update(tenantWhere({ is_archived: false }), { is_archived: true });
     return result.affected || 0;
   }
 
   async getItems(storeId: number): Promise<Item[]> {
+    const store = await this.findOne(storeId);
+    if (!store) {
+      return [];
+    }
     return this.itemRepository.find({
-      where: { store: { id: storeId }, is_archived: false },
+      where: tenantWhere({ store: { id: storeId }, is_archived: false }),
       relations: ['company', 'categories', 'store', 'shop'],
     });
   }
 
   async getAssetValue(storeId: number): Promise<number> {
+    const store = await this.findOne(storeId);
+    if (!store) {
+      return 0;
+    }
     const items = await this.itemRepository.find({
-      where: { store: { id: storeId }, is_archived: false },
+      where: tenantWhere({ store: { id: storeId }, is_archived: false }),
       select: ['id'],
     });
 

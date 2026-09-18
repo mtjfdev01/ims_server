@@ -10,6 +10,7 @@ import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
 import { FifoService } from '../stock-lots/fifo.service';
+import { applyShopScope, applyTenantScope, assertItemBelongsToShop, assertShopAccess, canAccessShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class SalesService {
@@ -30,6 +31,10 @@ export class SalesService {
     if (!createSaleDto.items || createSaleDto.items.length === 0) {
       throw new BadRequestException('Sale must have at least one item');
     }
+    const shopId = createSaleDto.shopId;
+    if (!shopId) {
+      throw new BadRequestException('Shop is required');
+    }
 
     return this.dataSource.transaction(async (em) => {
       const itemRepo = em.getRepository(Item);
@@ -41,14 +46,14 @@ export class SalesService {
         totalAmount: 0,
         totalProfit: 0,
       });
+      stampOwnership(sale);
 
-      if (createSaleDto.shopId) {
-        const shop = await shopRepo.findOne({
-          where: { id: createSaleDto.shopId },
-        });
-        if (shop) {
-          sale.shop = shop;
-        }
+      assertShopAccess(shopId);
+      const shop = await shopRepo.findOne({
+        where: tenantWhere({ id: shopId }),
+      });
+      if (shop) {
+        sale.shop = shop;
       }
 
       const savedSale = await saleRepo.save(sale);
@@ -57,11 +62,13 @@ export class SalesService {
 
       for (const saleItemDto of createSaleDto.items) {
         const item = await itemRepo.findOne({
-          where: { id: saleItemDto.itemId, is_archived: false },
+          where: tenantWhere({ id: saleItemDto.itemId, is_archived: false }),
+          relations: ['shop'],
         });
         if (!item) {
           throw new BadRequestException(`Item with ID ${saleItemDto.itemId} not found`);
         }
+        assertItemBelongsToShop(item, shopId);
         if (saleItemDto.quantity <= 0) {
           throw new BadRequestException(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
         }
@@ -99,10 +106,7 @@ export class SalesService {
   }
 
   async findAll(filterDto?: FilterDto, shopId?: number) {
-    const baseWhere: any = { is_archived: false };
-    if (shopId) {
-      baseWhere.shop = { id: shopId };
-    }
+    const baseWhere: any = { ...tenantWhere({ is_archived: false }), ...shopScopeWhere(shopId) };
     if (filterDto && (filterDto.page || filterDto.limit || filterDto.date || filterDto.dateFrom || filterDto.dateTo)) {
       return paginateWithFilters(
         this.salesRepository,
@@ -114,15 +118,19 @@ export class SalesService {
     }
     return this.salesRepository.find({
       where: baseWhere,
-      relations: ['saleItems', 'saleItems.item'],
+      relations: ['saleItems', 'saleItems.item', 'shop'],
     });
   }
 
-  findOne(id: number): Promise<Sale | null> {
-    return this.salesRepository.findOne({
-      where: { id, is_archived: false },
+  async findOne(id: number): Promise<Sale | null> {
+    const sale = await this.salesRepository.findOne({
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['saleItems', 'saleItems.item', 'shop'],
     });
+    if (!sale || !canAccessShopRecord(sale.shop?.id)) {
+      return null;
+    }
+    return sale;
   }
 
   async update(id: number, updateSaleDto: UpdateSaleDto): Promise<Sale | null> {
@@ -132,11 +140,11 @@ export class SalesService {
       const itemRepo = em.getRepository(Item);
 
       const existingSale = await saleRepo.findOne({
-        where: { id, is_archived: false },
-        relations: ['saleItems', 'saleItems.item', 'order'],
+        where: tenantWhere({ id, is_archived: false }),
+        relations: ['saleItems', 'saleItems.item', 'order', 'shop'],
       });
 
-      if (!existingSale) {
+      if (!existingSale || !canAccessShopRecord(existingSale.shop?.id)) {
         return null;
       }
 
@@ -162,10 +170,14 @@ export class SalesService {
 
       for (const saleItemDto of updateSaleDto.items) {
         const item = await itemRepo.findOne({
-          where: { id: saleItemDto.itemId, is_archived: false },
+          where: tenantWhere({ id: saleItemDto.itemId, is_archived: false }),
+          relations: ['shop'],
         });
         if (!item) {
           throw new BadRequestException(`Item with ID ${saleItemDto.itemId} not found`);
+        }
+        if (existingSale.shop?.id) {
+          assertItemBelongsToShop(item, existingSale.shop.id);
         }
         if (saleItemDto.quantity <= 0) {
           throw new BadRequestException(`Sale quantity must be greater than 0 for item ${item.name || item.id}`);
@@ -203,11 +215,11 @@ export class SalesService {
     return this.dataSource.transaction(async (em) => {
       const saleRepo = em.getRepository(Sale);
       const sale = await saleRepo.findOne({
-        where: { id, is_archived: false },
-        relations: ['saleItems', 'saleItems.item', 'order'],
+        where: tenantWhere({ id, is_archived: false }),
+        relations: ['saleItems', 'saleItems.item', 'order', 'shop'],
       });
 
-      if (!sale) {
+      if (!sale || !canAccessShopRecord(sale.shop?.id)) {
         return false;
       }
 
@@ -226,10 +238,8 @@ export class SalesService {
   async getTotals(filterDto?: FilterDto, shopId?: number): Promise<{ totalAmount: number; totalProfit: number }> {
     const queryBuilder = this.salesRepository.createQueryBuilder('sale')
       .where('sale.is_archived = :archived', { archived: false });
-
-    if (shopId) {
-      queryBuilder.andWhere('sale.shop_id = :shopId', { shopId });
-    }
+    applyTenantScope(queryBuilder, 'sale');
+    applyShopScope(queryBuilder, 'sale', shopId);
 
     if (filterDto?.date) {
       const date = new Date(filterDto.date);

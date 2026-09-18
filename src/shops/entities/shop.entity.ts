@@ -1,6 +1,7 @@
 import { Entity, Column, PrimaryGeneratedColumn, ManyToMany, JoinTable, ManyToOne, JoinColumn } from 'typeorm';
 import { Store } from '../../stores/entities/store.entity';
 import { User } from '../../users/entities/user.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
 
 @Entity('shops')
 export class Shop {
@@ -29,6 +30,10 @@ export class Shop {
 
   @ManyToMany(() => User, user => user.shops)
   users: User[];
+
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })

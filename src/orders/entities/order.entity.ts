@@ -2,6 +2,7 @@ import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateCol
 import { OrderItem } from '../../order-items/entities/order-item.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
 
 export enum OrderStatus {
   PENDING = 'pending',
@@ -27,6 +28,10 @@ export class Order {
 
   @Column('decimal', { precision: 10, scale: 2, default: 0 })
   totalAmount: number;
+
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
 
   @ManyToOne(() => Shop, { nullable: true })
   @JoinColumn({ name: 'shop_id' })

@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { Expense } from './entities/expense.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { applyShopScope, applyTenantScope, assertShopAccess, canAccessShopRecord, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class ExpenseService {
@@ -16,14 +17,20 @@ export class ExpenseService {
   ) {}
 
   async create(createExpenseDto: CreateExpenseDto): Promise<Expense> {
+    if (!createExpenseDto.shopId) {
+      throw new BadRequestException('Shop is required');
+    }
+
     const expense = this.expenseRepository.create({
       description: createExpenseDto.description,
       price: createExpenseDto.price,
     });
+    stampOwnership(expense);
 
     if (createExpenseDto.shopId) {
+      assertShopAccess(createExpenseDto.shopId);
       const shop = await this.shopRepository.findOne({
-        where: { id: createExpenseDto.shopId },
+        where: tenantWhere({ id: createExpenseDto.shopId }),
       });
       if (shop) {
         expense.shop = shop;
@@ -33,31 +40,50 @@ export class ExpenseService {
     return this.expenseRepository.save(expense);
   }
 
-  findAll(): Promise<Expense[]> {
-    return this.expenseRepository.find({
-      where: { is_archived: false },
-      relations: ['shop'],
-    });
+  findAll(filterDto?: { date?: string; dateFrom?: string; dateTo?: string }, shopId?: number): Promise<Expense[]> {
+    const queryBuilder = this.expenseRepository.createQueryBuilder('expense')
+      .leftJoinAndSelect('expense.shop', 'shop')
+      .where('expense.is_archived = :archived', { archived: false });
+    applyTenantScope(queryBuilder, 'expense');
+    applyShopScope(queryBuilder, 'expense', shopId);
+
+    if (filterDto?.date) {
+      const date = new Date(filterDto.date);
+      queryBuilder.andWhere('DATE(expense.createdAt) = DATE(:date)', { date });
+    } else {
+      if (filterDto?.dateFrom) {
+        queryBuilder.andWhere('DATE(expense.createdAt) >= DATE(:dateFrom)', { dateFrom: filterDto.dateFrom });
+      }
+      if (filterDto?.dateTo) {
+        queryBuilder.andWhere('DATE(expense.createdAt) <= DATE(:dateTo)', { dateTo: filterDto.dateTo });
+      }
+    }
+
+    return queryBuilder.orderBy('expense.createdAt', 'DESC').getMany();
   }
 
-  findByShop(shopId: number): Promise<Expense[]> {
-    return this.expenseRepository.find({
-      where: { shop: { id: shopId }, is_archived: false },
-      relations: ['shop'],
-    });
+  findByShop(shopId: number, filterDto?: { date?: string; dateFrom?: string; dateTo?: string }): Promise<Expense[]> {
+    return this.findAll(filterDto, shopId);
   }
 
-  findOne(id: number): Promise<Expense | null> {
-    return this.expenseRepository.findOne({ where: { id, is_archived: false } });
+  async findOne(id: number): Promise<Expense | null> {
+    const expense = await this.expenseRepository.findOne({
+      where: tenantWhere({ id, is_archived: false }),
+      relations: ['shop'],
+    });
+    if (!expense || !canAccessShopRecord(expense.shop?.id)) {
+      return null;
+    }
+    return expense;
   }
 
   async update(id: number, updateExpenseDto: UpdateExpenseDto): Promise<Expense | null> {
     const expense = await this.expenseRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['shop'],
     });
 
-    if (!expense) {
+    if (!expense || !canAccessShopRecord(expense.shop?.id)) {
       return null;
     }
 
@@ -70,8 +96,9 @@ export class ExpenseService {
 
     if (updateExpenseDto.shopId !== undefined) {
       if (updateExpenseDto.shopId) {
+        assertShopAccess(updateExpenseDto.shopId);
         const shop = await this.shopRepository.findOne({
-          where: { id: updateExpenseDto.shopId },
+          where: tenantWhere({ id: updateExpenseDto.shopId }),
         });
         expense.shop = shop ?? null;
       } else {
@@ -84,10 +111,11 @@ export class ExpenseService {
 
   async remove(id: number): Promise<boolean> {
     const expense = await this.expenseRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
+      relations: ['shop'],
     });
 
-    if (!expense) {
+    if (!expense || !canAccessShopRecord(expense.shop?.id)) {
       return false;
     }
 
@@ -97,13 +125,22 @@ export class ExpenseService {
     return true;
   }
 
-  async getTotal(shopId?: number): Promise<number> {
-    let queryBuilder = this.expenseRepository.createQueryBuilder('expense')
+  async getTotal(filterDto?: { date?: string; dateFrom?: string; dateTo?: string }, shopId?: number): Promise<number> {
+    const queryBuilder = this.expenseRepository.createQueryBuilder('expense')
       .where('expense.is_archived = :archived', { archived: false });
+    applyTenantScope(queryBuilder, 'expense');
+    applyShopScope(queryBuilder, 'expense', shopId);
 
-    // Filter by shop if provided
-    if (shopId) {
-      queryBuilder.andWhere('expense.shop_id = :shopId', { shopId });
+    if (filterDto?.date) {
+      const date = new Date(filterDto.date);
+      queryBuilder.andWhere('DATE(expense.createdAt) = DATE(:date)', { date });
+    } else {
+      if (filterDto?.dateFrom) {
+        queryBuilder.andWhere('DATE(expense.createdAt) >= DATE(:dateFrom)', { dateFrom: filterDto.dateFrom });
+      }
+      if (filterDto?.dateTo) {
+        queryBuilder.andWhere('DATE(expense.createdAt) <= DATE(:dateTo)', { dateTo: filterDto.dateTo });
+      }
     }
 
     const result = await queryBuilder

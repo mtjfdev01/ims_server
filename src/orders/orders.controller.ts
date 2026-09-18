@@ -3,12 +3,16 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { FilterDto } from '../common/filter.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Permission } from '../rbac/permissions';
 
 @Controller('orders')
+@RequirePermissions(Permission.ORDERS_READ)
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post()
+  @RequirePermissions(Permission.ORDERS_WRITE)
   async create(@Body() createOrderDto: CreateOrderDto) {
     return this.ordersService.create(createOrderDto);
   }
@@ -28,6 +32,7 @@ export class OrdersController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.ORDERS_WRITE)
   async update(@Param('id') id: string, @Body() updateOrderDto: UpdateOrderDto) {
     const order = await this.ordersService.update(+id, updateOrderDto);
     if (!order) {
@@ -37,6 +42,7 @@ export class OrdersController {
   }
 
   @Post(':id/return-items')
+  @RequirePermissions(Permission.ORDERS_WRITE)
   async returnItems(
     @Param('id') orderId: string,
     @Body() body: { itemId: number; returnedQuantity: number }
@@ -49,6 +55,7 @@ export class OrdersController {
   }
 
   @Delete(':id')
+  @RequirePermissions(Permission.ORDERS_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.ordersService.remove(+id);
     if (!result) {

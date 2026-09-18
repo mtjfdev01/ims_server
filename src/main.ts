@@ -8,6 +8,7 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { seedUsers } from './users/seed/users.seed';
 import { backfillStockLots } from './stock-lots/backfill-lots';
+import { backfillTenants } from './tenants/backfill-tenants';
 
 async function bootstrap() {
   console.log('🚀 Starting server...');
@@ -31,28 +32,32 @@ async function bootstrap() {
     console.error('❌ Database connection failed:', error.message);
   }
   
-  // Get allowed origins from environment or use defaults
-  const allowedOrigins = process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',') 
-    : [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'https://ims-client-eight.vercel.app',
-      ];
+  const extraOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
 
-  console.log('🌐 Allowed Origins:', allowedOrigins);
+  const isAllowedOrigin = (origin?: string) => {
+    if (!origin) return true;
+    if (extraOrigins.includes(origin)) return true;
+    try {
+      const { hostname, protocol } = new URL(origin);
+      const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+      const isVercel = hostname === 'ims-client-eight.vercel.app' || hostname.endsWith('.vercel.app');
+      return (isLocal && (protocol === 'http:' || protocol === 'https:')) || isVercel;
+    } catch {
+      return false;
+    }
+  };
 
   app.enableCors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.indexOf(origin) !== -1) {
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
         callback(null, true);
-      } else {
-        console.log('Blocked by CORS:', origin); // Debug log
-        callback(new Error('Not allowed by CORS'));
+        return;
       }
+      console.log('Blocked by CORS:', origin);
+      callback(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -63,16 +68,10 @@ async function bootstrap() {
       'Origin',
       'X-Requested-With',
       'X-Auth-Token',
-      'Access-Control-Allow-Headers'
+      'X-Tenant-Id',
     ],
-    exposedHeaders: [
-      'Authorization',
-      'Access-Control-Allow-Origin',
-      'Access-Control-Allow-Credentials'
-    ],
-    preflightContinue: false,
     optionsSuccessStatus: 204,
-    maxAge: 86400 // 24 hours cache for preflight
+    maxAge: 86400,
   });
 
   // Global middleware to log incoming requests
@@ -89,6 +88,8 @@ async function bootstrap() {
     console.log('🌱 Seeding users...');
     await seedUsers(dataSource);
     console.log('✅ Users seeded successfully');
+    await backfillTenants(dataSource);
+    console.log('✅ Tenant isolation ready');
     await backfillStockLots(dataSource);
     console.log('✅ FIFO stock lots ready');
   } catch (error) {
@@ -99,7 +100,7 @@ async function bootstrap() {
   await app.listen(port);
   console.log('═══════════════════════════════════════════════════════');
   console.log(`✅ Server started successfully on port ${port}`);
-  console.log(`🌐 CORS enabled for origins: ${allowedOrigins.join(', ')}`);
+  console.log('🌐 CORS enabled for localhost, Vercel, and ALLOWED_ORIGINS');
   console.log(`📡 Server is ready to accept requests`);
   console.log('═══════════════════════════════════════════════════════');
 }

@@ -2,40 +2,49 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundExcep
 import { ItemsService } from './items.service';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Permission } from '../rbac/permissions';
 
 @Controller('items')
+@RequirePermissions(Permission.ITEMS_READ)
 export class ItemsController {
   constructor(private readonly itemsService: ItemsService) {}
 
   @Post()
+  @RequirePermissions(Permission.ITEMS_WRITE)
   async create(@Body() createItemDto: CreateItemDto) {
     return this.itemsService.create(createItemDto);
   }
 
   @Post('transfer')
+  @RequirePermissions(Permission.ITEMS_TRANSFER)
   async transfer(@Body() transferDto: any) {
     const result = await this.itemsService.transfer(transferDto);
     return {
       message: `Successfully transferred ${transferDto.quantity} unit(s)`,
       sourceItem: result.sourceItem,
-      destinationItem: result.destinationItem
+      destinationItem: result.destinationItem,
     };
   }
 
   @Get()
   async findAll(
-    @Query('storeId') storeId?: string, 
+    @Query('storeId') storeId?: string,
     @Query('shopId') shopId?: string,
-    @Query('filterType') filterType?: 'store' | 'shop',
-    @Query('search') search?: string
+    @Query('filterType') filterType?: 'store' | 'shop' | Array<'store' | 'shop'>,
+    @Query('search') search?: string,
+    @Query('date') date?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
   ) {
-    if (storeId) {
-      return this.itemsService.findByStore(+storeId);
-    }
-    if (shopId) {
-      return this.itemsService.findByShop(+shopId);
-    }
-    return this.itemsService.findAll(filterType, search);
+    const type = Array.isArray(filterType) ? filterType[0] : filterType;
+    return this.itemsService.findAll(
+      type,
+      search,
+      shopId ? +shopId : undefined,
+      storeId ? +storeId : undefined,
+      { date, dateFrom, dateTo },
+    );
   }
 
   @Get(':id')
@@ -48,6 +57,7 @@ export class ItemsController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.ITEMS_WRITE)
   async update(@Param('id') id: string, @Body() updateItemDto: UpdateItemDto) {
     const item = await this.itemsService.update(+id, updateItemDto);
     if (!item) {
@@ -57,12 +67,14 @@ export class ItemsController {
   }
 
   @Delete('all')
+  @RequirePermissions(Permission.BULK_DELETE)
   async removeAll() {
     const result = await this.itemsService.removeAll();
     return { message: `Successfully deleted ${result} item(s)` };
   }
 
   @Delete(':id')
+  @RequirePermissions(Permission.ITEMS_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.itemsService.remove(+id);
     if (!result) {

@@ -3,12 +3,16 @@ import { SalesService } from './sales.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
 import { FilterDto } from '../common/filter.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Permission } from '../rbac/permissions';
 
 @Controller('sales')
+@RequirePermissions(Permission.SALES_READ)
 export class SalesController {
   constructor(private readonly salesService: SalesService) {}
 
   @Post()
+  @RequirePermissions(Permission.SALES_WRITE)
   async create(@Body() createSaleDto: CreateSaleDto) {
     return this.salesService.create(createSaleDto);
   }
@@ -33,6 +37,7 @@ export class SalesController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.SALES_WRITE)
   async update(@Param('id') id: string, @Body() updateSaleDto: UpdateSaleDto) {
     const sale = await this.salesService.update(+id, updateSaleDto);
     if (!sale) {
@@ -42,6 +47,7 @@ export class SalesController {
   }
 
   @Delete(':id')
+  @RequirePermissions(Permission.SALES_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.salesService.remove(+id);
     if (!result) {

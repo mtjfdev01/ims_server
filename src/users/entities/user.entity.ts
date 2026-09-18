@@ -1,5 +1,7 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToMany, JoinTable } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToMany, JoinTable, ManyToOne, JoinColumn } from 'typeorm';
 import { Shop } from '../../shops/entities/shop.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
+import { UserRole } from '../../common/request-context';
 
 @Entity('users')
 export class User {
@@ -14,6 +16,16 @@ export class User {
 
   @Column()
   password: string;
+
+  @Column({ type: 'varchar', length: 32, default: UserRole.USER })
+  role: UserRole;
+
+  @ManyToOne(() => Tenant, tenant => tenant.users, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  visiblePassword: string | null;
 
   @ManyToMany(() => Shop, shop => shop.users)
   @JoinTable({

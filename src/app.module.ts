@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -30,10 +31,16 @@ import { StockAllocation } from './stock-lots/entities/stock-allocation.entity';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { StockLotsModule } from './stock-lots/stock-lots.module';
+import { Tenant } from './tenants/entities/tenant.entity';
+import { AuthAlsInterceptor } from './auth/auth-als.interceptor';
+import { RbacModule } from './rbac/rbac.module';
+import { AuthGuard } from './rbac/guards/auth.guard';
+import { RolesGuard } from './rbac/guards/roles.guard';
+import { PermissionsGuard } from './rbac/guards/permissions.guard';
 
 const ALL_ENTITIES = [
   Shop, Store, Category, Company, Item, Sale, SaleItem, Order, OrderItem,
-  Purchase, Expense, Issue, User, StockLot, StockAllocation,
+  Purchase, Expense, Issue, User, StockLot, StockAllocation, Tenant,
 ];
 
 // Get database configuration
@@ -103,8 +110,15 @@ function getTypeOrmConfig() {
     StockLotsModule,
     AuthModule,
     UsersModule,
+    RbacModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
+    { provide: APP_INTERCEPTOR, useClass: AuthAlsInterceptor },
+  ],
 })
 export class AppModule {}

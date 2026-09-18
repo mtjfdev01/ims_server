@@ -9,6 +9,7 @@ import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
 import { FifoService } from '../stock-lots/fifo.service';
+import { applyShopOrUnscoped, applyTenantScope, assertShopAccess, canAccessOptionalShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class PurchasesService {
@@ -30,7 +31,7 @@ export class PurchasesService {
       const purchaseRepo = em.getRepository(Purchase);
 
       const item = await itemRepo.findOne({
-        where: { id: createPurchaseDto.itemId, is_archived: false },
+        where: tenantWhere({ id: createPurchaseDto.itemId, is_archived: false }),
         relations: ['shop'],
       });
 
@@ -51,10 +52,18 @@ export class PurchasesService {
           ? new Date(createPurchaseDto.purchaseDate)
           : new Date(),
       });
+      stampOwnership(purchase);
 
       const shopId = createPurchaseDto.shopId || item.shop?.id;
+      if (item.shop && shopId && Number(item.shop.id) !== Number(shopId)) {
+        throw new BadRequestException('Purchase shop must match the item shop');
+      }
+      if (item.shop) {
+        assertShopAccess(item.shop.id);
+      }
       if (shopId) {
-        const shop = await shopRepo.findOne({ where: { id: shopId } });
+        assertShopAccess(shopId);
+        const shop = await shopRepo.findOne({ where: tenantWhere({ id: shopId }) });
         if (shop) {
           purchase.shop = shop;
         }
@@ -87,11 +96,7 @@ export class PurchasesService {
   }
 
   async findAll(filterDto?: FilterDto & { itemId?: number; shopId?: number }) {
-    const baseWhere: any = { is_archived: false };
-
-    if (filterDto?.shopId) {
-      baseWhere.shop = { id: filterDto.shopId };
-    }
+    const baseWhere: any = { ...tenantWhere({ is_archived: false }), ...shopScopeWhere(filterDto?.shopId) };
 
     if (filterDto?.itemId) {
       baseWhere.item = { id: filterDto.itemId };
@@ -117,22 +122,26 @@ export class PurchasesService {
     });
   }
 
-  findOne(id: number): Promise<Purchase | null> {
-    return this.purchasesRepository.findOne({
-      where: { id, is_archived: false },
-      relations: ['item'],
+  async findOne(id: number): Promise<Purchase | null> {
+    const purchase = await this.purchasesRepository.findOne({
+      where: tenantWhere({ id, is_archived: false }),
+      relations: ['item', 'shop'],
     });
+    if (!purchase || !canAccessOptionalShopRecord(purchase.shop?.id)) {
+      return null;
+    }
+    return purchase;
   }
 
   async update(id: number, updatePurchaseDto: UpdatePurchaseDto): Promise<Purchase | null> {
     return this.dataSource.transaction(async (em) => {
       const purchaseRepo = em.getRepository(Purchase);
       const purchase = await purchaseRepo.findOne({
-        where: { id, is_archived: false },
-        relations: ['item'],
+        where: tenantWhere({ id, is_archived: false }),
+        relations: ['item', 'shop'],
       });
 
-      if (!purchase) {
+      if (!purchase || !canAccessOptionalShopRecord(purchase.shop?.id)) {
         return null;
       }
 
@@ -162,10 +171,11 @@ export class PurchasesService {
     return this.dataSource.transaction(async (em) => {
       const purchaseRepo = em.getRepository(Purchase);
       const purchase = await purchaseRepo.findOne({
-        where: { id, is_archived: false },
+        where: tenantWhere({ id, is_archived: false }),
+        relations: ['shop'],
       });
 
-      if (!purchase) {
+      if (!purchase || !canAccessOptionalShopRecord(purchase.shop?.id)) {
         return false;
       }
 
@@ -179,10 +189,8 @@ export class PurchasesService {
   async getTotal(filterDto?: FilterDto & { itemId?: number; shopId?: number }): Promise<number> {
     let queryBuilder = this.purchasesRepository.createQueryBuilder('purchase')
       .where('purchase.is_archived = :archived', { archived: false });
-
-    if (filterDto?.shopId) {
-      queryBuilder.andWhere('purchase.shop_id = :shopId', { shopId: filterDto.shopId });
-    }
+    applyTenantScope(queryBuilder, 'purchase');
+    applyShopOrUnscoped(queryBuilder, 'purchase', filterDto?.shopId);
 
     if (filterDto?.itemId) {
       queryBuilder.andWhere('purchase.item_id = :itemId', { itemId: filterDto.itemId });

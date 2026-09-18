@@ -5,6 +5,7 @@ import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 import { Company } from './entities/company.entity';
 import { Category } from '../category/entities/category.entity';
+import { stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class CompaniesService {
@@ -19,11 +20,12 @@ export class CompaniesService {
     const company = this.companiesRepository.create({
       name: createCompanyDto.name,
     });
+    stampOwnership(company);
 
     if (createCompanyDto.categories && createCompanyDto.categories.length > 0) {
-      const categories = await this.categoryRepository.findBy({
-        id: In(createCompanyDto.categories),
-      });
+        const categories = await this.categoryRepository.find({
+          where: tenantWhere({ id: In(createCompanyDto.categories) }),
+        });
       company.categories = categories;
     }
 
@@ -32,21 +34,21 @@ export class CompaniesService {
 
   findAll(): Promise<Company[]> {
     return this.companiesRepository.find({
-      where: { is_archived: false },
+      where: tenantWhere({ is_archived: false }),
       relations: ['categories', 'items'],
     });
   }
 
   findOne(id: number): Promise<Company | null> {
     return this.companiesRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['categories', 'items'],
     });
   }
 
   async update(id: number, updateCompanyDto: UpdateCompanyDto): Promise<Company | null> {
     const company = await this.companiesRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
       relations: ['categories'],
     });
 
@@ -60,8 +62,8 @@ export class CompaniesService {
 
     if (updateCompanyDto.categories !== undefined) {
       if (updateCompanyDto.categories.length > 0) {
-        const categories = await this.categoryRepository.findBy({
-          id: In(updateCompanyDto.categories),
+        const categories = await this.categoryRepository.find({
+          where: tenantWhere({ id: In(updateCompanyDto.categories) }),
         });
         company.categories = categories;
       } else {
@@ -74,7 +76,7 @@ export class CompaniesService {
 
   async remove(id: number): Promise<boolean> {
     const company = await this.companiesRepository.findOne({
-      where: { id, is_archived: false },
+      where: tenantWhere({ id, is_archived: false }),
     });
 
     if (!company) {

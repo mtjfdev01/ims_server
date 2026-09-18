@@ -3,35 +3,41 @@ import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { PaginationDto } from '../common/pagination.dto';
+import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
+import { Roles } from '../rbac/decorators/roles.decorator';
+import { Permission } from '../rbac/permissions';
+import { UserRole } from '../common/request-context';
 
 @Controller('shops')
+@RequirePermissions(Permission.SHOPS_READ)
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
   @Post()
-  async create(@Body() createShopDto: CreateShopDto, @Query('userId') userId?: string) {
-    return this.shopsService.create(createShopDto, userId ? +userId : undefined);
+  @RequirePermissions(Permission.SHOPS_WRITE)
+  async create(@Body() createShopDto: CreateShopDto) {
+    return this.shopsService.create(createShopDto);
   }
 
   @Get()
-  async findAll(@Query() paginationDto: PaginationDto, @Query('userId') userId?: string) {
-    return this.shopsService.findAll(paginationDto, userId ? +userId : undefined);
+  async findAll(@Query() paginationDto: PaginationDto) {
+    return this.shopsService.findAll(paginationDto);
   }
 
   @Get(':id/items')
-  async getShopItems(@Param('id') id: string, @Query('userId') userId?: string) {
-    return this.shopsService.getItems(+id, userId ? +userId : undefined);
+  async getShopItems(@Param('id') id: string) {
+    return this.shopsService.getItems(+id);
   }
 
   @Get(':id/asset-value')
-  async getAssetValue(@Param('id') id: string, @Query('userId') userId?: string) {
-    const value = await this.shopsService.getAssetValue(+id, userId ? +userId : undefined);
+  async getAssetValue(@Param('id') id: string) {
+    const value = await this.shopsService.getAssetValue(+id);
     return { assetValue: value };
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string, @Query('userId') userId?: string) {
-    const shop = await this.shopsService.findOne(+id, userId ? +userId : undefined);
+  async findOne(@Param('id') id: string) {
+    const shop = await this.shopsService.findOne(+id);
     if (!shop) {
       return { error: 'Shop not found' };
     }
@@ -39,6 +45,7 @@ export class ShopsController {
   }
 
   @Patch(':id')
+  @RequirePermissions(Permission.SHOPS_WRITE)
   async update(@Param('id') id: string, @Body() updateShopDto: UpdateShopDto) {
     const shop = await this.shopsService.update(+id, updateShopDto);
     if (!shop) {
@@ -48,12 +55,15 @@ export class ShopsController {
   }
 
   @Delete('all')
+  @RequirePermissions(Permission.BULK_DELETE)
   async removeAll() {
     const result = await this.shopsService.removeAll();
     return { message: `Successfully deleted ${result} shop(s)` };
   }
 
   @Delete(':id')
+  @Roles(UserRole.SUPER_ADMIN)
+  @RequirePermissions(Permission.SHOPS_DELETE)
   async remove(@Param('id') id: string) {
     const result = await this.shopsService.remove(+id);
     if (!result) {

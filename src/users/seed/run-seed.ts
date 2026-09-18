@@ -2,9 +2,14 @@ import { DataSource } from 'typeorm';
 import { config } from 'dotenv';
 import { seedUsers } from './users.seed';
 import { User } from '../entities/user.entity';
+import { Tenant } from '../../tenants/entities/tenant.entity';
+import { Shop } from '../../shops/entities/shop.entity';
+import { Store } from '../../stores/entities/store.entity';
 
 // Load environment variables
 config();
+
+const SEED_ENTITIES = [User, Tenant, Shop, Store];
 
 function getDatabaseConfig() {
   let databaseUrl = process.env.DATABASE_URL;
@@ -14,7 +19,7 @@ function getDatabaseConfig() {
     return {
       type: 'postgres' as const,
       url: databaseUrl,
-      entities: [User],
+      entities: SEED_ENTITIES,
       synchronize: false,
     };
   }
@@ -27,7 +32,7 @@ function getDatabaseConfig() {
     username: process.env.DB_USERNAME || 'postgres',
     password: (process.env.DB_PASSWORD || '').toString(),
     database: process.env.DB_DATABASE || 'ims',
-    entities: [User],
+    entities: SEED_ENTITIES,
     synchronize: false,
   };
 }
