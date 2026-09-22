@@ -8,6 +8,7 @@ import { Shop } from '../shops/entities/shop.entity';
 import { UserRole } from '../common/request-context';
 import { isSuperAdmin, requireTenantId, requireUser } from '../common/access.util';
 import { ASSIGNABLE_ROLES } from '../rbac/role-permissions';
+import { UserPermissionsService } from '../user-permissions/user-permissions.service';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -19,6 +20,7 @@ export class UsersService {
     private tenantRepository: Repository<Tenant>,
     @InjectRepository(Shop)
     private shopRepository: Repository<Shop>,
+    private userPermissionsService: UserPermissionsService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -109,7 +111,9 @@ export class UsersService {
     }
 
     const saved = await this.usersRepository.save(user);
-    return this.toAdminUser(await this.findById(saved.id) as User);
+    const created = await this.findById(saved.id) as User;
+    await this.userPermissionsService.seedDefaults(created);
+    return this.toAdminUser(created);
   }
 
   async assignRole(userId: number, role: UserRole): Promise<any> {

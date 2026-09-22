@@ -4,11 +4,14 @@ import { LoginDto } from './dto/login.dto';
 import { signAuthToken } from '../common/token.util';
 import { UserRole } from '../common/request-context';
 import { BILLING_CHECK_BYPASS, BILLING_INTERVAL } from '../billing/billing.config';
-import { permissionsForRole } from '../rbac/role-permissions';
+import { UserPermissionsService } from '../user-permissions/user-permissions.service';
 
 @Injectable()
 export class AuthService {
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    private userPermissionsService: UserPermissionsService,
+  ) {}
 
   async login(loginDto: LoginDto) {
     const user = await this.usersService.findByEmail(loginDto.email);
@@ -27,6 +30,7 @@ export class AuthService {
       email: user.email,
       role: user.role,
     });
+    const permissions = await this.userPermissionsService.modulesForUser(user);
 
     return {
       token,
@@ -37,7 +41,7 @@ export class AuthService {
         role: user.role,
         tenant: user.tenant ? { id: user.tenant.id, name: user.tenant.name } : null,
         shops: user.shops ? user.shops.map(shop => ({ id: shop.id, name: shop.name })) : [],
-        permissions: permissionsForRole(user.role),
+        permissions,
         billing: {
           interval: BILLING_INTERVAL,
           bypassed: BILLING_CHECK_BYPASS,

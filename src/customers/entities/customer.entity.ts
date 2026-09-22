@@ -1,0 +1,55 @@
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
+import { Tenant } from '../../tenants/entities/tenant.entity';
+import { Shop } from '../../shops/entities/shop.entity';
+import { User } from '../../users/entities/user.entity';
+import { Sale } from '../../sales/entities/sale.entity';
+import { ServiceJob } from '../../service-jobs/entities/service-job.entity';
+import { InstallmentPlan } from '../../installments/entities/installment-plan.entity';
+
+@Entity('customers')
+export class Customer {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column({ type: 'varchar', length: 120 })
+  name: string;
+
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  phone: string | null;
+
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  email: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  address: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  notes: string | null;
+
+  @ManyToOne(() => Tenant, { nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant: Tenant | null;
+
+  @ManyToOne(() => Shop, { nullable: true })
+  @JoinColumn({ name: 'shop_id' })
+  shop: Shop | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'created_by' })
+  createdBy: User | null;
+
+  @OneToMany(() => Sale, sale => sale.customer)
+  sales: Sale[];
+
+  @OneToMany(() => ServiceJob, job => job.customer)
+  serviceJobs: ServiceJob[];
+
+  @OneToMany(() => InstallmentPlan, plan => plan.customer)
+  installmentPlans: InstallmentPlan[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @Column({ default: false })
+  is_archived: boolean;
+}

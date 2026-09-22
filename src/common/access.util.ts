@@ -92,16 +92,37 @@ export function assertItemBelongsToShop(item: { shop?: { id: number } | null }, 
   }
 }
 
-export function canAccessIssue(issue: { fromShop?: { id: number } | null; toShop?: { id: number } | null }): boolean {
+export function storeLinkedToAssignedShops(store?: { shops?: { id: number }[] } | null): boolean {
+  if (skipsShopFilter()) {
+    return true;
+  }
+  return (store?.shops || []).some(shop => hasShopAccess(shop.id));
+}
+
+export function assertStoreAccess(store?: { shops?: { id: number }[] } | null): void {
+  if (skipsShopFilter()) {
+    return;
+  }
+  if (!storeLinkedToAssignedShops(store)) {
+    throw new ForbiddenException('You do not have access to this store');
+  }
+}
+
+export function canAccessIssue(issue: {
+  fromShop?: { id: number } | null;
+  toShop?: { id: number } | null;
+  fromStore?: { shops?: { id: number }[] } | null;
+  toStore?: { shops?: { id: number }[] } | null;
+}): boolean {
   if (skipsShopFilter()) {
     return true;
   }
   const fromId = issue.fromShop?.id;
   const toId = issue.toShop?.id;
-  if (!fromId && !toId) {
-    return true;
+  if (fromId || toId) {
+    return hasShopAccess(fromId) || hasShopAccess(toId);
   }
-  return hasShopAccess(fromId) || hasShopAccess(toId);
+  return storeLinkedToAssignedShops(issue.fromStore) || storeLinkedToAssignedShops(issue.toStore);
 }
 
 export function assignedShopIds(): number[] | null {

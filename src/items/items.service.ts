@@ -10,7 +10,8 @@ import { Store } from '../stores/entities/store.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { PurchasesService } from '../purchases/purchases.service';
 import { FifoService } from '../stock-lots/fifo.service';
-import { assertShopAccess, canAccessOptionalShopRecord, requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
+import { paginateQuery } from '../common/pagination.util';
+import { assertShopAccess, assertStoreAccess, canAccessOptionalShopRecord, requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class ItemsService {
@@ -71,10 +72,15 @@ export class ItemsService {
       }
 
       if (createItemDto.storeId) {
-        const store = await storeRepo.findOne({ where: tenantWhere({ id: createItemDto.storeId }) });
-        if (store) {
-          item.store = store;
+        const store = await storeRepo.findOne({
+          where: tenantWhere({ id: createItemDto.storeId }),
+          relations: ['shops'],
+        });
+        if (!store) {
+          throw new BadRequestException('Store not found');
         }
+        assertStoreAccess(store);
+        item.store = store;
       }
 
       if (createItemDto.shopId) {
@@ -115,7 +121,9 @@ export class ItemsService {
     shopId?: number,
     storeId?: number,
     dates?: { date?: string; dateFrom?: string; dateTo?: string },
-  ): Promise<Item[]> {
+    page?: number,
+    limit?: number,
+  ) {
     const user = requireUser();
     const queryBuilder = this.itemsRepository.createQueryBuilder('item')
       .leftJoinAndSelect('item.company', 'company')
@@ -169,7 +177,8 @@ export class ItemsService {
       }
     }
 
-    return queryBuilder.getMany();
+    queryBuilder.orderBy('item.name', 'ASC');
+    return paginateQuery(queryBuilder, { page, limit });
   }
 
   async findOne(id: number): Promise<any> {
@@ -252,8 +261,13 @@ export class ItemsService {
         if (updateItemDto.storeId) {
           const store = await storeRepo.findOne({
             where: tenantWhere({ id: updateItemDto.storeId }),
+            relations: ['shops'],
           });
-          item.store = store ?? null;
+          if (!store) {
+            throw new BadRequestException('Store not found');
+          }
+          assertStoreAccess(store);
+          item.store = store;
           item.shop = null;
         } else {
           item.store = null;
@@ -316,7 +330,15 @@ export class ItemsService {
     return true;
   }
 
-  findByStore(storeId: number): Promise<Item[]> {
+  async findByStore(storeId: number): Promise<Item[]> {
+    const store = await this.storeRepository.findOne({
+      where: tenantWhere({ id: storeId, is_archived: false }),
+      relations: ['shops'],
+    });
+    if (!store) {
+      return [];
+    }
+    assertStoreAccess(store);
     return this.itemsRepository.find({
       where: tenantWhere({ store: { id: storeId }, is_archived: false }),
       relations: ['company', 'categories', 'store', 'shop'],
@@ -331,7 +353,7 @@ export class ItemsService {
     });
   }
 
-  findAllShopItems(): Promise<Item[]> {
+  findAllShopItems() {
     return this.findAll('shop');
   }
 
@@ -367,7 +389,12 @@ export class ItemsService {
         if (!sourceItem.store || sourceItem.store.id !== transferDto.fromStoreId) {
           throw new BadRequestException('Item is not in the specified store');
         }
-      } else       if (transferDto.fromShopId) {
+        const fromStore = await storeRepo.findOne({
+          where: tenantWhere({ id: transferDto.fromStoreId }),
+          relations: ['shops'],
+        });
+        assertStoreAccess(fromStore);
+      } else if (transferDto.fromShopId) {
         assertShopAccess(transferDto.fromShopId);
         if (!sourceItem.shop || sourceItem.shop.id !== transferDto.fromShopId) {
           throw new BadRequestException('Item is not in the specified shop');
@@ -382,10 +409,12 @@ export class ItemsService {
       if (transferDto.toStoreId) {
         destinationStore = await storeRepo.findOne({
           where: tenantWhere({ id: transferDto.toStoreId }),
+          relations: ['shops'],
         });
         if (!destinationStore) {
           throw new BadRequestException('Destination store not found');
         }
+        assertStoreAccess(destinationStore);
       } else if (transferDto.toShopId) {
         assertShopAccess(transferDto.toShopId);
         destinationShop = await shopRepo.findOne({

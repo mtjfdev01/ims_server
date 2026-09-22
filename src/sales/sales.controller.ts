@@ -2,6 +2,7 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestj
 import { SalesService } from './sales.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
+import { CreateSalePaymentDto } from '../sale-payments/dto/create-sale-payment.dto';
 import { FilterDto } from '../common/filter.dto';
 import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
 import { Permission } from '../rbac/permissions';
@@ -30,6 +31,16 @@ export class SalesController {
   @Get(':id')
   async findOne(@Param('id') id: string) {
     const sale = await this.salesService.findOne(+id);
+    if (!sale) {
+      return { error: 'Sale not found' };
+    }
+    return sale;
+  }
+
+  @Post(':id/payments')
+  @RequirePermissions(Permission.SALES_WRITE)
+  async addPayment(@Param('id') id: string, @Body() dto: CreateSalePaymentDto) {
+    const sale = await this.salesService.addPayment(+id, dto);
     if (!sale) {
       return { error: 'Sale not found' };
     }

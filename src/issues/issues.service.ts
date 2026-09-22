@@ -7,7 +7,7 @@ import { Issue } from './entities/issue.entity';
 import { Item } from '../items/entities/item.entity';
 import { Store } from '../stores/entities/store.entity';
 import { Shop } from '../shops/entities/shop.entity';
-import { applyTenantScope, assertShopAccess, assignedShopIds, canAccessIssue, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
+import { applyTenantScope, assertShopAccess, assertStoreAccess, assignedShopIds, canAccessIssue, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class IssuesService {
@@ -40,10 +40,12 @@ export class IssuesService {
     if (createIssueDto.fromStoreId) {
       fromStore = await this.storeRepository.findOne({
         where: tenantWhere({ id: createIssueDto.fromStoreId, is_archived: false }),
+        relations: ['shops'],
       });
       if (!fromStore) {
         throw new Error('Source store not found');
       }
+      assertStoreAccess(fromStore);
       if (!item.store || item.store.id !== createIssueDto.fromStoreId) {
         throw new Error('Item is not in the specified store');
       }
@@ -69,10 +71,12 @@ export class IssuesService {
     if (createIssueDto.toStoreId) {
       toStore = await this.storeRepository.findOne({
         where: tenantWhere({ id: createIssueDto.toStoreId, is_archived: false }),
+        relations: ['shops'],
       });
       if (!toStore) {
         throw new Error('Destination store not found');
       }
+      assertStoreAccess(toStore);
     } else if (createIssueDto.toShopId) {
       assertShopAccess(createIssueDto.toShopId);
       toShop = await this.shopRepository.findOne({
@@ -120,7 +124,7 @@ export class IssuesService {
     if (!skipsShopFilter()) {
       const ids = assignedShopIds()?.length ? assignedShopIds() as number[] : [-1];
       queryBuilder.andWhere(
-        '(fromShop.id IN (:...shopIds) OR toShop.id IN (:...shopIds) OR (fromShop.id IS NULL AND toShop.id IS NULL))',
+        '(fromShop.id IN (:...shopIds) OR toShop.id IN (:...shopIds))',
         { shopIds: ids },
       );
     }
@@ -130,7 +134,7 @@ export class IssuesService {
   async findOne(id: number): Promise<Issue | null> {
     const issue = await this.issuesRepository.findOne({
       where: tenantWhere({ id, is_archived: false }),
-      relations: ['item', 'fromStore', 'fromShop', 'toStore', 'toShop'],
+      relations: ['item', 'fromStore', 'fromStore.shops', 'fromShop', 'toStore', 'toStore.shops', 'toShop'],
     });
     if (!issue || !canAccessIssue(issue)) {
       return null;
@@ -141,7 +145,7 @@ export class IssuesService {
   async update(id: number, updateIssueDto: UpdateIssueDto): Promise<Issue | null> {
     const issue = await this.issuesRepository.findOne({
       where: tenantWhere({ id, is_archived: false }),
-      relations: ['item', 'fromStore', 'fromShop', 'toStore', 'toShop'],
+      relations: ['item', 'fromStore', 'fromStore.shops', 'fromShop', 'toStore', 'toStore.shops', 'toShop'],
     });
 
     if (!issue || !canAccessIssue(issue)) {
@@ -161,7 +165,7 @@ export class IssuesService {
   async remove(id: number): Promise<boolean> {
     const issue = await this.issuesRepository.findOne({
       where: tenantWhere({ id, is_archived: false }),
-      relations: ['fromShop', 'toShop'],
+      relations: ['fromShop', 'toShop', 'fromStore', 'fromStore.shops', 'toStore', 'toStore.shops'],
     });
 
     if (!issue || !canAccessIssue(issue)) {

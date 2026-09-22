@@ -4,7 +4,9 @@ import { Repository } from 'typeorm';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { Category } from './entities/category.entity';
-import { stampOwnership, tenantWhere } from '../common/access.util';
+import { FilterDto } from '../common/filter.dto';
+import { paginateQuery } from '../common/pagination.util';
+import { applyTenantScope, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class CategoryService {
@@ -19,8 +21,15 @@ export class CategoryService {
     return this.categoryRepository.save(category);
   }
 
-  findAll(): Promise<Category[]> {
-    return this.categoryRepository.find({ where: tenantWhere({ is_archived: false }) });
+  findAll(filterDto?: FilterDto) {
+    const queryBuilder = this.categoryRepository.createQueryBuilder('category')
+      .where('category.is_archived = :archived', { archived: false });
+    applyTenantScope(queryBuilder, 'category');
+    if (filterDto?.search?.trim()) {
+      queryBuilder.andWhere('category.name ILIKE :term', { term: `%${filterDto.search.trim()}%` });
+    }
+    queryBuilder.orderBy('category.name', 'ASC');
+    return paginateQuery(queryBuilder, filterDto);
   }
 
   findOne(id: number): Promise<Category | null> {
@@ -32,7 +41,7 @@ export class CategoryService {
     if (!category) {
       return null;
     }
-    await this.categoryRepository.update(id, updateCategoryDto);
+    await this.categoryRepository.update(tenantWhere({ id, is_archived: false }), updateCategoryDto);
     return this.findOne(id);
   }
 

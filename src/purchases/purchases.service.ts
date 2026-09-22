@@ -9,7 +9,7 @@ import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
 import { paginateWithFilters } from '../common/pagination.util';
 import { FifoService } from '../stock-lots/fifo.service';
-import { applyShopOrUnscoped, applyTenantScope, assertShopAccess, canAccessOptionalShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
+import { applyShopScope, applyTenantScope, assertShopAccess, canAccessOptionalShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class PurchasesService {
@@ -190,7 +190,7 @@ export class PurchasesService {
     let queryBuilder = this.purchasesRepository.createQueryBuilder('purchase')
       .where('purchase.is_archived = :archived', { archived: false });
     applyTenantScope(queryBuilder, 'purchase');
-    applyShopOrUnscoped(queryBuilder, 'purchase', filterDto?.shopId);
+    applyShopScope(queryBuilder, 'purchase', filterDto?.shopId);
 
     if (filterDto?.itemId) {
       queryBuilder.andWhere('purchase.item_id = :itemId', { itemId: filterDto.itemId });

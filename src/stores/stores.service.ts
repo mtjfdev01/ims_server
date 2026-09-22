@@ -8,7 +8,9 @@ import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FifoService } from '../stock-lots/fifo.service';
 import { requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
-import { PaginationDto, PaginationResult } from '../common/pagination.dto';
+import { PaginationResult } from '../common/pagination.dto';
+import { FilterDto } from '../common/filter.dto';
+import { paginateQuery } from '../common/pagination.util';
 
 @Injectable()
 export class StoresService {
@@ -39,7 +41,7 @@ export class StoresService {
     return this.storesRepository.save(store);
   }
 
-  async findAll(paginationDto?: PaginationDto): Promise<Store[] | PaginationResult<Store>> {
+  async findAll(filterDto?: FilterDto): Promise<Store[] | PaginationResult<Store>> {
     const queryBuilder = this.storesRepository.createQueryBuilder('store')
       .leftJoinAndSelect('store.shops', 'shops')
       .where('store.is_archived = :archived', { archived: false });
@@ -54,16 +56,12 @@ export class StoresService {
       queryBuilder.andWhere('shops.id IN (:...shopIds)', { shopIds: ids });
       queryBuilder.distinct(true);
     }
-
-    if (paginationDto && (paginationDto.page || paginationDto.limit)) {
-      const page = paginationDto.page || 1;
-      const limit = paginationDto.limit || 10;
-      const skip = (page - 1) * limit;
-      const [data, total] = await queryBuilder.skip(skip).take(limit).getManyAndCount();
-      return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    if (filterDto?.search?.trim()) {
+      const term = `%${filterDto.search.trim()}%`;
+      queryBuilder.andWhere('(store.name ILIKE :term OR store.location ILIKE :term)', { term });
     }
 
-    return queryBuilder.getMany();
+    return paginateQuery(queryBuilder, filterDto);
   }
 
   async findOne(id: number): Promise<Store | null> {
@@ -83,11 +81,7 @@ export class StoresService {
   }
 
   async update(id: number, updateStoreDto: UpdateStoreDto): Promise<Store | null> {
-    const store = await this.storesRepository.findOne({
-      where: tenantWhere({ id, is_archived: false }),
-      relations: ['shops'],
-    });
-
+    const store = await this.findOne(id);
     if (!store) {
       return null;
     }

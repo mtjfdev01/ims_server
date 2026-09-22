@@ -5,7 +5,9 @@ import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyDto } from './dto/update-company.dto';
 import { Company } from './entities/company.entity';
 import { Category } from '../category/entities/category.entity';
-import { stampOwnership, tenantWhere } from '../common/access.util';
+import { FilterDto } from '../common/filter.dto';
+import { paginateQuery } from '../common/pagination.util';
+import { applyTenantScope, canAccessOptionalShopRecord, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class CompaniesService {
@@ -32,18 +34,30 @@ export class CompaniesService {
     return this.companiesRepository.save(company);
   }
 
-  findAll(): Promise<Company[]> {
-    return this.companiesRepository.find({
-      where: tenantWhere({ is_archived: false }),
-      relations: ['categories', 'items'],
-    });
+  findAll(filterDto?: FilterDto) {
+    const queryBuilder = this.companiesRepository.createQueryBuilder('company')
+      .leftJoinAndSelect('company.categories', 'categories')
+      .where('company.is_archived = :archived', { archived: false });
+    applyTenantScope(queryBuilder, 'company');
+    if (filterDto?.search?.trim()) {
+      queryBuilder.andWhere('company.name ILIKE :term', { term: `%${filterDto.search.trim()}%` });
+    }
+    queryBuilder.orderBy('company.name', 'ASC');
+    return paginateQuery(queryBuilder, filterDto);
   }
 
-  findOne(id: number): Promise<Company | null> {
-    return this.companiesRepository.findOne({
+  async findOne(id: number): Promise<Company | null> {
+    const company = await this.companiesRepository.findOne({
       where: tenantWhere({ id, is_archived: false }),
-      relations: ['categories', 'items'],
+      relations: ['categories', 'items', 'items.shop'],
     });
+    if (!company) {
+      return null;
+    }
+    if (company.items) {
+      company.items = company.items.filter(item => !item.is_archived && canAccessOptionalShopRecord(item.shop?.id));
+    }
+    return company;
   }
 
   async update(id: number, updateCompanyDto: UpdateCompanyDto): Promise<Company | null> {

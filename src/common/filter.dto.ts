@@ -17,4 +17,19 @@ export class FilterDto extends PaginationDto {
 
   @IsOptional()
   search?: string; // Search field (for future use)
+
+  @IsOptional()
+  paymentStatus?: string;
+
+  @IsOptional()
+  dueToday?: string;
+
+  @IsOptional()
+  customerId?: string;
+
+  @IsOptional()
+  kind?: string;
+
+  @IsOptional()
+  installmentStatus?: string;
 }

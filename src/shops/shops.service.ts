@@ -11,8 +11,9 @@ import { Store } from '../stores/entities/store.entity';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { FifoService } from '../stock-lots/fifo.service';
-import { PaginationDto, PaginationResult } from '../common/pagination.dto';
-import { paginate } from '../common/pagination.util';
+import { PaginationResult } from '../common/pagination.dto';
+import { FilterDto } from '../common/filter.dto';
+import { paginateQuery } from '../common/pagination.util';
 
 @Injectable()
 export class ShopsService {
@@ -62,7 +63,7 @@ export class ShopsService {
     }) as Promise<Shop>;
   }
 
-  async findAll(paginationDto?: PaginationDto): Promise<Shop[] | PaginationResult<Shop>> {
+  async findAll(filterDto?: FilterDto): Promise<Shop[] | PaginationResult<Shop>> {
     const user = requireUser();
     const queryBuilder = this.shopsRepository.createQueryBuilder('shop')
       .leftJoinAndSelect('shop.stores', 'stores')
@@ -76,15 +77,15 @@ export class ShopsService {
       const ids = user.shopIds.length ? user.shopIds : [-1];
       queryBuilder.andWhere('shop.id IN (:...ids)', { ids });
     }
-
-    if (paginationDto && (paginationDto.page || paginationDto.limit)) {
-      const page = paginationDto.page || 1;
-      const limit = paginationDto.limit || 10;
-      const skip = (page - 1) * limit;
-      const [data, total] = await queryBuilder.skip(skip).take(limit).getManyAndCount();
-      return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    if (filterDto?.search?.trim()) {
+      const term = `%${filterDto.search.trim()}%`;
+      queryBuilder.andWhere(
+        '(shop.name ILIKE :term OR shop.branch ILIKE :term OR shop.dealer ILIKE :term OR shop.location ILIKE :term)',
+        { term },
+      );
     }
-    return queryBuilder.getMany();
+
+    return paginateQuery(queryBuilder, filterDto);
   }
 
   async findOne(id: number): Promise<Shop | null> {

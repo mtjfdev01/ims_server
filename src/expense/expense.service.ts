@@ -5,6 +5,8 @@ import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 import { Expense } from './entities/expense.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { FilterDto } from '../common/filter.dto';
+import { paginateQuery } from '../common/pagination.util';
 import { applyShopScope, applyTenantScope, assertShopAccess, canAccessShopRecord, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
@@ -40,13 +42,16 @@ export class ExpenseService {
     return this.expenseRepository.save(expense);
   }
 
-  findAll(filterDto?: { date?: string; dateFrom?: string; dateTo?: string }, shopId?: number): Promise<Expense[]> {
+  findAll(filterDto?: FilterDto, shopId?: number) {
     const queryBuilder = this.expenseRepository.createQueryBuilder('expense')
       .leftJoinAndSelect('expense.shop', 'shop')
       .where('expense.is_archived = :archived', { archived: false });
     applyTenantScope(queryBuilder, 'expense');
     applyShopScope(queryBuilder, 'expense', shopId);
 
+    if (filterDto?.search?.trim()) {
+      queryBuilder.andWhere('expense.description ILIKE :term', { term: `%${filterDto.search.trim()}%` });
+    }
     if (filterDto?.date) {
       const date = new Date(filterDto.date);
       queryBuilder.andWhere('DATE(expense.createdAt) = DATE(:date)', { date });
@@ -59,10 +64,11 @@ export class ExpenseService {
       }
     }
 
-    return queryBuilder.orderBy('expense.createdAt', 'DESC').getMany();
+    queryBuilder.orderBy('expense.createdAt', 'DESC');
+    return paginateQuery(queryBuilder, filterDto);
   }
 
-  findByShop(shopId: number, filterDto?: { date?: string; dateFrom?: string; dateTo?: string }): Promise<Expense[]> {
+  findByShop(shopId: number, filterDto?: FilterDto) {
     return this.findAll(filterDto, shopId);
   }
 
@@ -95,15 +101,17 @@ export class ExpenseService {
     }
 
     if (updateExpenseDto.shopId !== undefined) {
-      if (updateExpenseDto.shopId) {
-        assertShopAccess(updateExpenseDto.shopId);
-        const shop = await this.shopRepository.findOne({
-          where: tenantWhere({ id: updateExpenseDto.shopId }),
-        });
-        expense.shop = shop ?? null;
-      } else {
-        expense.shop = null;
+      if (!updateExpenseDto.shopId) {
+        throw new BadRequestException('Shop is required');
       }
+      assertShopAccess(updateExpenseDto.shopId);
+      const shop = await this.shopRepository.findOne({
+        where: tenantWhere({ id: updateExpenseDto.shopId }),
+      });
+      if (!shop) {
+        throw new BadRequestException('Shop not found');
+      }
+      expense.shop = shop;
     }
 
     return this.expenseRepository.save(expense);

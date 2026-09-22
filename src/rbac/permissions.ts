@@ -29,6 +29,18 @@ export enum Permission {
   SALES_WRITE = 'sales.write',
   SALES_DELETE = 'sales.delete',
 
+  CUSTOMERS_READ = 'customers.read',
+  CUSTOMERS_WRITE = 'customers.write',
+  CUSTOMERS_DELETE = 'customers.delete',
+
+  SERVICES_READ = 'services.read',
+  SERVICES_WRITE = 'services.write',
+  SERVICES_DELETE = 'services.delete',
+
+  INSTALLMENTS_READ = 'installments.read',
+  INSTALLMENTS_WRITE = 'installments.write',
+  INSTALLMENTS_DELETE = 'installments.delete',
+
   ORDERS_READ = 'orders.read',
   ORDERS_WRITE = 'orders.write',
   ORDERS_DELETE = 'orders.delete',

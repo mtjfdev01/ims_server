@@ -2,7 +2,7 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestj
 import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
-import { PaginationDto } from '../common/pagination.dto';
+import { FilterDto } from '../common/filter.dto';
 import { RequirePermissions } from '../rbac/decorators/permissions.decorator';
 import { Roles } from '../rbac/decorators/roles.decorator';
 import { Permission } from '../rbac/permissions';
@@ -20,8 +20,8 @@ export class ShopsController {
   }
 
   @Get()
-  async findAll(@Query() paginationDto: PaginationDto) {
-    return this.shopsService.findAll(paginationDto);
+  async findAll(@Query() filterDto: FilterDto) {
+    return this.shopsService.findAll(filterDto);
   }
 
   @Get(':id/items')

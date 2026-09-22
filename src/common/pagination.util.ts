@@ -31,6 +31,21 @@ export async function paginate<T extends ObjectLiteral>(
   };
 }
 
+export async function paginateQuery<T>(
+  queryBuilder: { getCount: () => Promise<number>; skip: Function; take: Function; getMany: () => Promise<T[]> },
+  filterDto?: { page?: number; limit?: number },
+): Promise<T[] | { data: T[]; total: number; page: number; limit: number; totalPages: number }> {
+  const page = filterDto?.page ? Number(filterDto.page) : undefined;
+  const limit = filterDto?.limit ? Number(filterDto.limit) : undefined;
+  if (page && limit) {
+    const total = await queryBuilder.getCount();
+    queryBuilder.skip((page - 1) * limit).take(limit);
+    const data = await queryBuilder.getMany();
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) || 0 };
+  }
+  return queryBuilder.getMany();
+}
+
 /**
  * Paginate with filters (date, search, etc.)
  */
