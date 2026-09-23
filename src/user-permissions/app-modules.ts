@@ -1,6 +1,7 @@
 import { UserRole } from '../common/request-context';
 
 export type AppModuleKey =
+  | 'dashboard'
   | 'sales'
   | 'services'
   | 'installments'
@@ -16,6 +17,7 @@ export type AppModuleKey =
   | 'users';
 
 export const APP_MODULES: { key: AppModuleKey; label: string }[] = [
+  { key: 'dashboard', label: 'Dashboard' },
   { key: 'sales', label: 'Sales' },
   { key: 'services', label: 'Services' },
   { key: 'installments', label: 'Installments' },
@@ -56,3 +58,4 @@ export function withStockTransfersModule(modules: string[]): string[] {
   }
   return unique;
 }
+

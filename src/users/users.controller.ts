@@ -56,6 +56,32 @@ class ResetPasswordDto {
   password: string;
 }
 
+class AdminUpdateUserDto {
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  name?: string;
+
+  @IsOptional()
+  @IsEnum(UserRole)
+  role?: UserRole;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @Type(() => Number)
+  shopIds?: number[];
+
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  password?: string;
+}
+
 @Controller('users')
 @RequirePermissions(Permission.USERS_MANAGE)
 export class UsersController {
@@ -71,9 +97,19 @@ export class UsersController {
     return this.usersService.findAllTenants();
   }
 
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.usersService.findOneForAdmin(+id);
+  }
+
   @Post()
   create(@Body() body: AdminCreateUserDto) {
     return this.usersService.adminCreateUser(body);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() body: AdminUpdateUserDto) {
+    return this.usersService.updateUser(+id, body);
   }
 
   @Patch(':id/role')

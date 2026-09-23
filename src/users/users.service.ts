@@ -48,6 +48,15 @@ export class UsersService {
     });
   }
 
+  async findOneForAdmin(id: number): Promise<any> {
+    this.assertSuperAdmin();
+    const user = await this.findById(id);
+    if (!user || user.role === UserRole.SUPER_ADMIN) {
+      throw new NotFoundException('User not found');
+    }
+    return this.toAdminUser(user);
+  }
+
   async findAllForAdmin(): Promise<any[]> {
     this.assertSuperAdmin();
     const users = await this.usersRepository.find({
@@ -114,6 +123,47 @@ export class UsersService {
     const created = await this.findById(saved.id) as User;
     await this.userPermissionsService.seedDefaults(created);
     return this.toAdminUser(created);
+  }
+
+  async updateUser(userId: number, body: {
+    email?: string;
+    name?: string;
+    role?: UserRole;
+    shopIds?: number[];
+    password?: string;
+  }): Promise<any> {
+    this.assertSuperAdmin();
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.role === UserRole.SUPER_ADMIN) {
+      throw new BadRequestException('Cannot update the super admin');
+    }
+
+    if (body.email && body.email !== user.email) {
+      const existing = await this.usersRepository.findOne({ where: { email: body.email } });
+      if (existing) {
+        throw new BadRequestException('A user with this email already exists');
+      }
+      user.email = body.email;
+    }
+    if (body.name) {
+      user.name = body.name;
+    }
+    if (body.role) {
+      user.role = this.resolveAssignableRole(body.role);
+    }
+    if (body.password) {
+      user.password = await bcrypt.hash(body.password, 10);
+      user.visiblePassword = body.password;
+    }
+    await this.usersRepository.save(user);
+
+    if (body.shopIds) {
+      return this.assignShops(userId, body.shopIds);
+    }
+    return this.toAdminUser(await this.findById(user.id) as User);
   }
 
   async assignRole(userId: number, role: UserRole): Promise<any> {
