@@ -18,25 +18,31 @@ export class PurchasesController {
   }
 
   @Get()
-  async findAll(@Query() filterDto: FilterDto & { itemId?: string; shopId?: string }) {
+  async findAll(@Query() filterDto: FilterDto & { itemId?: string; shopId?: string; sellerId?: string }) {
     const filters: any = { ...filterDto };
     if (filterDto.itemId) {
       filters.itemId = parseInt(filterDto.itemId);
     }
     if (filterDto.shopId) {
       filters.shopId = parseInt(filterDto.shopId);
+    }
+    if (filterDto.sellerId) {
+      filters.sellerId = parseInt(filterDto.sellerId);
     }
     return this.purchasesService.findAll(filters);
   }
 
   @Get('totals')
-  async getTotal(@Query() filterDto: FilterDto & { itemId?: string; shopId?: string }) {
+  async getTotal(@Query() filterDto: FilterDto & { itemId?: string; shopId?: string; sellerId?: string }) {
     const filters: any = { ...filterDto };
     if (filterDto.itemId) {
       filters.itemId = parseInt(filterDto.itemId);
     }
     if (filterDto.shopId) {
       filters.shopId = parseInt(filterDto.shopId);
+    }
+    if (filterDto.sellerId) {
+      filters.sellerId = parseInt(filterDto.sellerId);
     }
     const total = await this.purchasesService.getTotal(filters);
     return { total };

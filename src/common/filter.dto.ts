@@ -28,8 +28,20 @@ export class FilterDto extends PaginationDto {
   customerId?: string;
 
   @IsOptional()
+  sellerId?: string;
+
+  @IsOptional()
   kind?: string;
 
   @IsOptional()
   installmentStatus?: string;
+
+  @IsOptional()
+  condition?: string;
+
+  @IsOptional()
+  companyId?: string;
+
+  @IsOptional()
+  categoryId?: string;
 }

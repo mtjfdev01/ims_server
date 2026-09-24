@@ -10,6 +10,7 @@ import { Shop } from '../shops/entities/shop.entity';
 import { SalePayment } from '../sale-payments/entities/sale-payment.entity';
 import { CreateSalePaymentDto } from '../sale-payments/dto/create-sale-payment.dto';
 import { FilterDto } from '../common/filter.dto';
+import { isItemCondition, SECOND_HAND_CONDITIONS } from '../items/item-condition';
 import { FifoService } from '../stock-lots/fifo.service';
 import { CustomersService } from '../customers/customers.service';
 import { applyShopScope, applyTenantScope, assertItemBelongsToShop, assertShopAccess, canAccessShopRecord, stampOwnership, tenantWhere } from '../common/access.util';
@@ -187,7 +188,44 @@ export class SalesService {
     }
     if (filterDto?.search?.trim()) {
       const term = `%${filterDto.search.trim()}%`;
-      queryBuilder.andWhere('(customer.name ILIKE :term OR customer.phone ILIKE :term OR customer.email ILIKE :term)', { term });
+      queryBuilder.andWhere(
+        `(customer.name ILIKE :term OR customer.phone ILIKE :term OR customer.email ILIKE :term OR EXISTS (
+          SELECT 1 FROM sale_items searchItems
+          INNER JOIN items searchItem ON searchItem.id = searchItems.item_id
+          WHERE searchItems.sale_id = sale.id
+          AND (searchItem.uniqueIdentifier ILIKE :term OR searchItem.name ILIKE :term)
+        ))`,
+        { term },
+      );
+    }
+    if (filterDto?.condition === 'second_hand') {
+      queryBuilder.andWhere(`EXISTS (
+        SELECT 1 FROM sale_items condItems
+        INNER JOIN items condItem ON condItem.id = condItems.item_id
+        WHERE condItems.sale_id = sale.id AND condItem.condition IN (:...secondHand)
+      )`, { secondHand: SECOND_HAND_CONDITIONS });
+    } else if (filterDto?.condition && isItemCondition(filterDto.condition)) {
+      queryBuilder.andWhere(`EXISTS (
+        SELECT 1 FROM sale_items condItems
+        INNER JOIN items condItem ON condItem.id = condItems.item_id
+        WHERE condItems.sale_id = sale.id AND condItem.condition = :condition
+      )`, { condition: filterDto.condition });
+    }
+    const companyId = Number(filterDto?.companyId);
+    if (companyId) {
+      queryBuilder.andWhere(`EXISTS (
+        SELECT 1 FROM sale_items companyItems
+        INNER JOIN items companyItem ON companyItem.id = companyItems.item_id
+        WHERE companyItems.sale_id = sale.id AND companyItem.company_id = :companyId
+      )`, { companyId });
+    }
+    const categoryId = Number(filterDto?.categoryId);
+    if (categoryId) {
+      queryBuilder.andWhere(`EXISTS (
+        SELECT 1 FROM sale_items categoryItems
+        INNER JOIN item_categories ic ON ic.item_id = categoryItems.item_id
+        WHERE categoryItems.sale_id = sale.id AND ic.category_id = :categoryId
+      )`, { categoryId });
     }
   }
 

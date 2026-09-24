@@ -33,6 +33,10 @@ export enum Permission {
   CUSTOMERS_WRITE = 'customers.write',
   CUSTOMERS_DELETE = 'customers.delete',
 
+  SELLERS_READ = 'sellers.read',
+  SELLERS_WRITE = 'sellers.write',
+  SELLERS_DELETE = 'sellers.delete',
+
   SERVICES_READ = 'services.read',
   SERVICES_WRITE = 'services.write',
   SERVICES_DELETE = 'services.delete',

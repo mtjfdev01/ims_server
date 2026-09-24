@@ -28,6 +28,7 @@ export class CustomersService {
       email: dto.email?.trim() || null,
       address: dto.address?.trim() || null,
       notes: dto.notes?.trim() || null,
+      cnic: dto.cnic?.trim() || null,
     });
     stampOwnership(customer);
 
@@ -104,7 +105,7 @@ export class CustomersService {
     if (search?.trim()) {
       const term = `%${search.trim()}%`;
       queryBuilder.andWhere(
-        '(customer.name ILIKE :term OR customer.phone ILIKE :term OR customer.email ILIKE :term OR customer.address ILIKE :term)',
+        '(customer.name ILIKE :term OR customer.phone ILIKE :term OR customer.email ILIKE :term OR customer.address ILIKE :term OR customer.cnic ILIKE :term)',
         { term },
       );
     }
@@ -191,6 +192,9 @@ export class CustomersService {
     }
     if (dto.notes !== undefined) {
       customer.notes = dto.notes?.trim() || null;
+    }
+    if (dto.cnic !== undefined) {
+      customer.cnic = dto.cnic?.trim() || null;
     }
     if (dto.shopId !== undefined) {
       if (dto.shopId) {

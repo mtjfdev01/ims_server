@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, In } from 'typeorm';
+import { DataSource, EntityManager, Repository, In } from 'typeorm';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { Item } from './entities/item.entity';
@@ -12,6 +12,7 @@ import { PurchasesService } from '../purchases/purchases.service';
 import { FifoService } from '../stock-lots/fifo.service';
 import { paginateQuery } from '../common/pagination.util';
 import { assertShopAccess, assertStoreAccess, canAccessOptionalShopRecord, requireSuperAdmin, requireTenantId, requireUser, skipsShopFilter, stampOwnership, tenantWhere } from '../common/access.util';
+import { isItemCondition, normalizeUniqueIdentifier, SECOND_HAND_CONDITIONS } from './item-condition';
 
 @Injectable()
 export class ItemsService {
@@ -47,9 +48,17 @@ export class ItemsService {
       const storeRepo = em.getRepository(Store);
       const shopRepo = em.getRepository(Shop);
 
+      const uniqueIdentifier = normalizeUniqueIdentifier(createItemDto.uniqueIdentifier);
+      const condition = createItemDto.condition && isItemCondition(createItemDto.condition)
+        ? createItemDto.condition
+        : null;
+      await this.assertUniqueIdentifierAvailable(em, uniqueIdentifier);
+
       const item = itemRepo.create({
         name: createItemDto.name.trim(),
         location: createItemDto.location?.trim() || null,
+        uniqueIdentifier,
+        condition,
         quantity: 0,
         purchasePrice: createItemDto.purchasePrice || 0,
         minimumSalePrice: createItemDto.minimumSalePrice,
@@ -123,6 +132,9 @@ export class ItemsService {
     dates?: { date?: string; dateFrom?: string; dateTo?: string },
     page?: number,
     limit?: number,
+    condition?: string,
+    companyId?: number,
+    categoryId?: number,
   ) {
     const user = requireUser();
     const queryBuilder = this.itemsRepository.createQueryBuilder('item')
@@ -163,7 +175,26 @@ export class ItemsService {
 
     if (search && search.trim()) {
       const searchTerm = `%${search.trim()}%`;
-      queryBuilder.andWhere('item.name ILIKE :search', { search: searchTerm });
+      queryBuilder.andWhere(
+        '(item.name ILIKE :search OR item.uniqueIdentifier ILIKE :search)',
+        { search: searchTerm },
+      );
+    }
+
+    if (condition === 'second_hand') {
+      queryBuilder.andWhere('item.condition IN (:...secondHand)', { secondHand: SECOND_HAND_CONDITIONS });
+    } else if (condition && isItemCondition(condition)) {
+      queryBuilder.andWhere('item.condition = :condition', { condition });
+    }
+
+    if (companyId) {
+      queryBuilder.andWhere('item.company_id = :companyId', { companyId });
+    }
+    if (categoryId) {
+      queryBuilder.andWhere(`EXISTS (
+        SELECT 1 FROM item_categories ic
+        WHERE ic.item_id = item.id AND ic.category_id = :categoryId
+      )`, { categoryId });
     }
 
     if (dates?.date) {
@@ -232,6 +263,16 @@ export class ItemsService {
       }
       if (updateItemDto.location !== undefined) {
         item.location = updateItemDto.location;
+      }
+      if (updateItemDto.uniqueIdentifier !== undefined) {
+        const uniqueIdentifier = normalizeUniqueIdentifier(updateItemDto.uniqueIdentifier);
+        await this.assertUniqueIdentifierAvailable(em, uniqueIdentifier, item.id);
+        item.uniqueIdentifier = uniqueIdentifier;
+      }
+      if (updateItemDto.condition !== undefined) {
+        item.condition = updateItemDto.condition && isItemCondition(updateItemDto.condition)
+          ? updateItemDto.condition
+          : null;
       }
       if (updateItemDto.minimumSalePrice !== undefined) {
         item.minimumSalePrice = updateItemDto.minimumSalePrice;
@@ -428,6 +469,8 @@ export class ItemsService {
       }
 
       const categoryIds = sourceItem.categories?.map(c => c.id) || [];
+      const movingWholeSerialized = Boolean(sourceItem.uniqueIdentifier)
+        && transferQuantity >= Number(sourceItem.quantity || 0);
       let destinationItem: Item | null = null;
 
       if (destinationStore) {
@@ -460,6 +503,13 @@ export class ItemsService {
         if (!categoriesMatch || destinationItem.name !== sourceItem.name) {
           destinationItem = null;
         }
+        if (
+          destinationItem
+          && sourceItem.uniqueIdentifier
+          && destinationItem.uniqueIdentifier !== sourceItem.uniqueIdentifier
+        ) {
+          destinationItem = null;
+        }
       }
 
       if (!destinationItem) {
@@ -470,6 +520,8 @@ export class ItemsService {
           store: destinationStore,
           shop: destinationShop,
           location: sourceItem.location,
+          uniqueIdentifier: movingWholeSerialized ? sourceItem.uniqueIdentifier : null,
+          condition: sourceItem.condition,
           quantity: 0,
           purchasePrice: sourceItem.purchasePrice,
           minimumSalePrice: sourceItem.minimumSalePrice,
@@ -483,6 +535,12 @@ export class ItemsService {
       }
 
       await this.fifoService.transferLots(em, sourceItem, destinationItem, transferQuantity);
+      if (movingWholeSerialized) {
+        await itemRepo.update({ id: sourceItem.id }, { uniqueIdentifier: null });
+        if (!destinationItem.uniqueIdentifier) {
+          await itemRepo.update({ id: destinationItem.id }, { uniqueIdentifier: sourceItem.uniqueIdentifier });
+        }
+      }
 
       const updatedSource = await itemRepo.findOne({
         where: { id: sourceItem.id },
@@ -498,6 +556,30 @@ export class ItemsService {
         destinationItem: updatedDestination as Item,
       };
     });
+  }
+
+  private async assertUniqueIdentifierAvailable(
+    em: EntityManager,
+    uniqueIdentifier: string | null,
+    excludeId?: number,
+  ): Promise<void> {
+    if (!uniqueIdentifier) {
+      return;
+    }
+    const query = em.getRepository(Item).createQueryBuilder('item')
+      .where('item.is_archived = :archived', { archived: false })
+      .andWhere('LOWER(item.uniqueIdentifier) = LOWER(:uniqueIdentifier)', { uniqueIdentifier });
+    const scoped = tenantWhere();
+    if (scoped.tenant) {
+      query.andWhere('item.tenant_id = :tenantId', { tenantId: scoped.tenant.id });
+    }
+    if (excludeId) {
+      query.andWhere('item.id != :excludeId', { excludeId });
+    }
+    const existing = await query.getOne();
+    if (existing) {
+      throw new BadRequestException('An item with this unique identifier already exists');
+    }
   }
 
   async removeAll(): Promise<number> {

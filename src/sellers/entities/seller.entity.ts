@@ -2,12 +2,10 @@ import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, ManyToOne, Jo
 import { Tenant } from '../../tenants/entities/tenant.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
-import { Sale } from '../../sales/entities/sale.entity';
-import { ServiceJob } from '../../service-jobs/entities/service-job.entity';
-import { InstallmentPlan } from '../../installments/entities/installment-plan.entity';
+import { Purchase } from '../../purchases/entities/purchase.entity';
 
-@Entity('customers')
-export class Customer {
+@Entity('sellers')
+export class Seller {
   @PrimaryGeneratedColumn()
   id: number;
 
@@ -41,14 +39,8 @@ export class Customer {
   @JoinColumn({ name: 'created_by' })
   createdBy: User | null;
 
-  @OneToMany(() => Sale, sale => sale.customer)
-  sales: Sale[];
-
-  @OneToMany(() => ServiceJob, job => job.customer)
-  serviceJobs: ServiceJob[];
-
-  @OneToMany(() => InstallmentPlan, plan => plan.customer)
-  installmentPlans: InstallmentPlan[];
+  @OneToMany(() => Purchase, purchase => purchase.seller)
+  purchases: Purchase[];
 
   @CreateDateColumn()
   createdAt: Date;

@@ -3,6 +3,7 @@ import { Item } from '../../items/entities/item.entity';
 import { Shop } from '../../shops/entities/shop.entity';
 import { User } from '../../users/entities/user.entity';
 import { Tenant } from '../../tenants/entities/tenant.entity';
+import { Seller } from '../../sellers/entities/seller.entity';
 
 @Entity('purchases')
 export class Purchase {
@@ -33,6 +34,10 @@ export class Purchase {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })
   createdBy: User | null;
+
+  @ManyToOne(() => Seller, seller => seller.purchases, { nullable: true })
+  @JoinColumn({ name: 'seller_id' })
+  seller: Seller | null;
 
   @CreateDateColumn()
   createdAt: Date;

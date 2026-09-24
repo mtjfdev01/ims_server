@@ -38,6 +38,9 @@ export class ItemsController {
     @Query('dateTo') dateTo?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('condition') condition?: string,
+    @Query('companyId') companyId?: string,
+    @Query('categoryId') categoryId?: string,
   ) {
     const type = Array.isArray(filterType) ? filterType[0] : filterType;
     return this.itemsService.findAll(
@@ -48,6 +51,9 @@ export class ItemsController {
       { date, dateFrom, dateTo },
       page ? +page : undefined,
       limit ? +limit : undefined,
+      condition,
+      companyId ? +companyId : undefined,
+      categoryId ? +categoryId : undefined,
     );
   }
 

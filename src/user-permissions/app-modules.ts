@@ -6,6 +6,7 @@ export type AppModuleKey =
   | 'services'
   | 'installments'
   | 'customers'
+  | 'sellers'
   | 'items'
   | 'issues'
   | 'categories'
@@ -22,6 +23,7 @@ export const APP_MODULES: { key: AppModuleKey; label: string }[] = [
   { key: 'services', label: 'Services' },
   { key: 'installments', label: 'Installments' },
   { key: 'customers', label: 'Customers' },
+  { key: 'sellers', label: 'Sellers' },
   { key: 'items', label: 'Items' },
   { key: 'issues', label: 'Stock Transfers' },
   { key: 'categories', label: 'Categories' },
@@ -55,6 +57,10 @@ export function withStockTransfersModule(modules: string[]): string[] {
   )).filter(Boolean))];
   if (!unique.includes('issues') && unique.includes('items')) {
     unique.splice(unique.indexOf('items') + 1, 0, 'issues');
+  }
+  if (!unique.includes('sellers') && unique.includes('customers')) {
+    const after = unique.includes('customers') ? unique.indexOf('customers') + 1 : unique.length;
+    unique.splice(after, 0, 'sellers');
   }
   return unique;
 }

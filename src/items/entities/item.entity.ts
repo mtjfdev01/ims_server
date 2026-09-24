@@ -38,6 +38,12 @@ export class Item {
   @Column({ type: 'varchar', length: 255, nullable: true })
   location: string | null;
 
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  uniqueIdentifier: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  condition: string | null;
+
   @Column('int', { default: 1 })
   quantity: number;
 

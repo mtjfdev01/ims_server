@@ -9,6 +9,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { ItemsModule } from './items/items.module';
 import { SalesModule } from './sales/sales.module';
 import { CustomersModule } from './customers/customers.module';
+import { SellersModule } from './sellers/sellers.module';
 import { ServiceJobsModule } from './service-jobs/service-jobs.module';
 import { InstallmentsModule } from './installments/installments.module';
 import { OrdersModule } from './orders/orders.module';
@@ -36,6 +37,7 @@ import { UsersModule } from './users/users.module';
 import { StockLotsModule } from './stock-lots/stock-lots.module';
 import { Tenant } from './tenants/entities/tenant.entity';
 import { Customer } from './customers/entities/customer.entity';
+import { Seller } from './sellers/entities/seller.entity';
 import { SalePayment } from './sale-payments/entities/sale-payment.entity';
 import { ServiceJob } from './service-jobs/entities/service-job.entity';
 import { ServicePayment } from './service-payments/entities/service-payment.entity';
@@ -52,7 +54,7 @@ import { PermissionsGuard } from './rbac/guards/permissions.guard';
 const ALL_ENTITIES = [
   Shop, Store, Category, Company, Item, Sale, SaleItem, Order, OrderItem,
   Purchase, Expense, Issue, User, StockLot, StockAllocation, Tenant,
-  Customer, SalePayment, ServiceJob, ServicePayment, InstallmentPlan, InstallmentDue,
+  Customer, Seller, SalePayment, ServiceJob, ServicePayment, InstallmentPlan, InstallmentDue,
   UserPermission,
 ];
 
@@ -116,6 +118,7 @@ function getTypeOrmConfig() {
     ItemsModule,
     SalesModule,
     CustomersModule,
+    SellersModule,
     ServiceJobsModule,
     InstallmentsModule,
     OrdersModule,

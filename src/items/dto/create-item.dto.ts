@@ -5,6 +5,8 @@ export class CreateItemDto {
   storeId?: number;
   shopId?: number;
   location?: string;
+  uniqueIdentifier?: string;
+  condition?: string;
   quantity: number;
   purchasePrice: number;
   minimumSalePrice: number;

@@ -7,9 +7,11 @@ import { Purchase } from './entities/purchase.entity';
 import { Item } from '../items/entities/item.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { FilterDto } from '../common/filter.dto';
-import { paginateWithFilters } from '../common/pagination.util';
+import { paginateQuery } from '../common/pagination.util';
+import { applyItemConditionFilter } from '../items/item-condition';
 import { FifoService } from '../stock-lots/fifo.service';
-import { applyShopScope, applyTenantScope, assertShopAccess, canAccessOptionalShopRecord, shopScopeWhere, stampOwnership, tenantWhere } from '../common/access.util';
+import { SellersService } from '../sellers/sellers.service';
+import { applyShopScope, applyTenantScope, assertShopAccess, canAccessOptionalShopRecord, stampOwnership, tenantWhere } from '../common/access.util';
 
 @Injectable()
 export class PurchasesService {
@@ -21,6 +23,7 @@ export class PurchasesService {
     @InjectRepository(Shop)
     private shopRepository: Repository<Shop>,
     private fifoService: FifoService,
+    private sellersService: SellersService,
     private dataSource: DataSource,
   ) {}
 
@@ -69,6 +72,15 @@ export class PurchasesService {
         }
       }
 
+      if (createPurchaseDto.sellerId || createPurchaseDto.newSeller?.name?.trim()) {
+        purchase.seller = await this.sellersService.resolveForShop(
+          shopId || item.shop?.id,
+          createPurchaseDto.sellerId || undefined,
+          createPurchaseDto.newSeller,
+          em,
+        );
+      }
+
       const savedPurchase = await purchaseRepo.save(purchase);
       await this.fifoService.addStock(
         em,
@@ -81,7 +93,7 @@ export class PurchasesService {
 
       const result = await purchaseRepo.findOne({
         where: { id: savedPurchase.id },
-        relations: ['item', 'shop'],
+        relations: ['item', 'shop', 'seller'],
       });
       if (!result) {
         throw new BadRequestException('Failed to reload purchase after creation');
@@ -95,37 +107,22 @@ export class PurchasesService {
     return this.dataSource.transaction(run);
   }
 
-  async findAll(filterDto?: FilterDto & { itemId?: number; shopId?: number }) {
-    const baseWhere: any = { ...tenantWhere({ is_archived: false }), ...shopScopeWhere(filterDto?.shopId) };
-
-    if (filterDto?.itemId) {
-      baseWhere.item = { id: filterDto.itemId };
-    } else if (filterDto?.search) {
-      const itemId = parseInt(filterDto.search);
-      if (!isNaN(itemId)) {
-        baseWhere.item = { id: itemId };
-      }
-    }
-
-    if (filterDto && (filterDto.page || filterDto.limit || filterDto.date || filterDto.dateFrom || filterDto.dateTo)) {
-      return paginateWithFilters(
-        this.purchasesRepository,
-        filterDto,
-        baseWhere,
-        ['item'],
-        { dateField: 'purchaseDate' }
-      );
-    }
-    return this.purchasesRepository.find({
-      relations: ['item'],
-      where: { ...baseWhere, is_archived: false },
-    });
+  async findAll(filterDto?: FilterDto & { itemId?: number; shopId?: number; sellerId?: number }) {
+    const queryBuilder = this.purchasesRepository.createQueryBuilder('purchase')
+      .leftJoinAndSelect('purchase.item', 'item')
+      .leftJoinAndSelect('purchase.seller', 'seller')
+      .where('purchase.is_archived = :archived', { archived: false });
+    applyTenantScope(queryBuilder, 'purchase');
+    applyShopScope(queryBuilder, 'purchase', filterDto?.shopId);
+    this.applyListFilters(queryBuilder, filterDto);
+    queryBuilder.orderBy('purchase.createdAt', 'DESC');
+    return paginateQuery(queryBuilder, filterDto);
   }
 
   async findOne(id: number): Promise<Purchase | null> {
     const purchase = await this.purchasesRepository.findOne({
       where: tenantWhere({ id, is_archived: false }),
-      relations: ['item', 'shop'],
+      relations: ['item', 'shop', 'seller'],
     });
     if (!purchase || !canAccessOptionalShopRecord(purchase.shop?.id)) {
       return null;
@@ -138,7 +135,7 @@ export class PurchasesService {
       const purchaseRepo = em.getRepository(Purchase);
       const purchase = await purchaseRepo.findOne({
         where: tenantWhere({ id, is_archived: false }),
-        relations: ['item', 'shop'],
+        relations: ['item', 'shop', 'seller'],
       });
 
       if (!purchase || !canAccessOptionalShopRecord(purchase.shop?.id)) {
@@ -161,6 +158,19 @@ export class PurchasesService {
 
       if (updatePurchaseDto.purchaseDate !== undefined) {
         purchase.purchaseDate = new Date(updatePurchaseDto.purchaseDate);
+      }
+
+      if (updatePurchaseDto.newSeller?.name?.trim()) {
+        purchase.seller = await this.sellersService.resolveForShop(
+          purchase.shop?.id,
+          undefined,
+          updatePurchaseDto.newSeller,
+          em,
+        );
+      } else if (updatePurchaseDto.sellerId !== undefined) {
+        purchase.seller = updatePurchaseDto.sellerId
+          ? await this.sellersService.resolveForShop(purchase.shop?.id, updatePurchaseDto.sellerId, undefined, em)
+          : null;
       }
 
       return purchaseRepo.save(purchase);
@@ -186,15 +196,40 @@ export class PurchasesService {
     });
   }
 
-  async getTotal(filterDto?: FilterDto & { itemId?: number; shopId?: number }): Promise<number> {
+  async getTotal(filterDto?: FilterDto & { itemId?: number; shopId?: number; sellerId?: number }): Promise<number> {
     let queryBuilder = this.purchasesRepository.createQueryBuilder('purchase')
+      .leftJoin('purchase.item', 'item')
+      .leftJoin('purchase.seller', 'seller')
       .where('purchase.is_archived = :archived', { archived: false });
     applyTenantScope(queryBuilder, 'purchase');
     applyShopScope(queryBuilder, 'purchase', filterDto?.shopId);
+    this.applyListFilters(queryBuilder, filterDto);
 
+    const result = await queryBuilder
+      .select('SUM(purchase.purchasePrice * purchase.quantity)', 'total')
+      .getRawOne();
+
+    return parseFloat(result?.total || '0') || 0;
+  }
+
+  private applyListFilters(
+    queryBuilder: ReturnType<Repository<Purchase>['createQueryBuilder']>,
+    filterDto?: FilterDto & { itemId?: number; shopId?: number; sellerId?: number },
+  ) {
     if (filterDto?.itemId) {
       queryBuilder.andWhere('purchase.item_id = :itemId', { itemId: filterDto.itemId });
     }
+    if (filterDto?.sellerId) {
+      queryBuilder.andWhere('purchase.seller_id = :sellerId', { sellerId: filterDto.sellerId });
+    }
+    if (filterDto?.search?.trim() && !filterDto?.itemId) {
+      const term = `%${filterDto.search.trim()}%`;
+      queryBuilder.andWhere(
+        '(item.name ILIKE :term OR item.uniqueIdentifier ILIKE :term OR seller.name ILIKE :term OR seller.phone ILIKE :term OR seller.cnic ILIKE :term)',
+        { term },
+      );
+    }
+    applyItemConditionFilter(queryBuilder, 'item', filterDto?.condition);
 
     if (filterDto?.date) {
       const date = new Date(filterDto.date);
@@ -207,11 +242,5 @@ export class PurchasesService {
         queryBuilder.andWhere('DATE(purchase.purchaseDate) <= DATE(:dateTo)', { dateTo: filterDto.dateTo });
       }
     }
-
-    const result = await queryBuilder
-      .select('SUM(purchase.purchasePrice * purchase.quantity)', 'total')
-      .getRawOne();
-
-    return parseFloat(result?.total || '0') || 0;
   }
 }

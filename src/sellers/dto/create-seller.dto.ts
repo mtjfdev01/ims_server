@@ -1,7 +1,7 @@
 import { IsEmail, IsInt, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class CreateCustomerDto {
+export class CreateSellerDto {
   @IsString()
   @MinLength(1)
   @MaxLength(120)
